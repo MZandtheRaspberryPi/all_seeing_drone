@@ -1,0 +1,3 @@
+pygame==1.9.6
+codrone==1.2.4
+opencv-python==4.1.0.25
