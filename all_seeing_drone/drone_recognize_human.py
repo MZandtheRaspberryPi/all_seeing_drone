@@ -20,7 +20,7 @@ Can be run normally with the below command that will recognize humans post-landi
 Or can be run to recognize humans in real time with the below:
  python drone_recognize_human.py -recognize_human
 
-Or can be run without recognizing humans (the faster run time/highest FPS):
+Or can be run without recognizing humans (faster run time/highest FPS):
  python drone_recognize_human.py
 
 Can be profiled (for speed testing) by running with the below, or enabling
