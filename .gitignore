@@ -1,1 +1,4 @@
-droneLog.txt
+drone_log.txt
+__pycache__
+PairInfo
+.ipynb_checkpoints
