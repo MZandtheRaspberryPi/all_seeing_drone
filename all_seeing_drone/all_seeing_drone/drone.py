@@ -31,21 +31,20 @@ debug logging as there is useful logging built in:
 
 # TODO: figure out drone drift
 # TODO: figure out speed issues with frames including downsampling
-from CoDrone import Color, Mode, CoDrone
+from CoDrone import CoDrone
 import cv2
 import time
 import os
 import datetime
 import logging
-import math
 import pygame
 import argparse
 
 
-from drone_camera import FPS, WebcamVideoStream, recognize_human, process_video
-from drone_util import get_joystick_buttons, update_non_real_time_info, update_sensor_information, hud_display
-from drone_movement import command_top_gun
-from drone_util import calibrate
+from all_seeing_drone.drone_camera import FPS, WebcamVideoStream, recognize_human, process_video
+from all_seeing_drone.drone_util import get_joystick_buttons, update_non_real_time_info, update_sensor_information, hud_display
+from all_seeing_drone.drone_movement import command_top_gun
+from all_seeing_drone.drone_util import calibrate
 
 def logger(func):
     def log_func(*args):
@@ -84,6 +83,7 @@ class SeeingDrone(CoDrone):
         self.video_output_dir = video_output_dir
         self.time_now = datetime.datetime.now()
         self.video_name = self.time_now.strftime('drone_%Y%m%d_%H%M')
+        self.video_full_path = os.path.join(self.video_output_dir, self.video_name) + ".avi"
 
         # setting up logging
         self.log_path = self.video_output_dir
@@ -105,11 +105,14 @@ class SeeingDrone(CoDrone):
         self.fps_actual = 29.0
 
         # setting up gamepad
-        pygame.init()
-        pygame.joystick.init()
-        self.joystick = pygame.joystick.Joystick(0)
-        self.joystick.init()
-        self.axes = self.joystick.get_numaxes()
+        try:
+            pygame.init()
+            pygame.joystick.init()
+            self.joystick = pygame.joystick.Joystick(0)
+            self.joystick.init()
+            self.axes = self.joystick.get_numaxes()
+        except:
+            logging.info("No joysticks found.")
 
         # https://forum.robolink.com/topic/148/how-to-control-my-drone-with-opencv
         # https://drive.google.com/drive/folders/1mpqUnG6tBHZDdtv_FG5Z0npH_5DAT785
@@ -165,12 +168,6 @@ class SeeingDrone(CoDrone):
         calibrate()
 
     def _setup_camera(self):
-        # https://docs.opencv.org/3.0-beta/doc/py_tutorials/py_gui/py_video_display/py_video_display.html
-        # fourcc format and extension (.avi) is particular. expirement
-        # to see what works on your computer
-        self.fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-        self.out = cv2.VideoWriter(os.path.join(self.video_output_dir, self.video_name) + ".avi",
-                                   self.fourcc, self.fps_actual, (int(self.width), int(self.height)))
         # Capture video from the Wifi Connection to FPV module
         # RTSP =(Real Time Streaming Protocol)
         # TODO: eventually make the connection switch automatic
@@ -180,30 +177,36 @@ class SeeingDrone(CoDrone):
         self._setup_camera()
         print("Staring Camera, press q to quit with camera window in focus. "
               "If it doesn't close, check caps lock and num lock.", flush=True)
+        self.frame_list = []
         while True:
-            now = time.time()
-            frame = self.vs.read()
-            logging.debug("Reading frame took {} seconds".format(time.time() - now))
+            self.frame_list.append(self.vs.read())
             # displaying the frame and writing it
-            now = time.time()
-            cv2.imshow("Drone Camera", frame)
-            self.out.write(frame)
+            cv2.imshow("Drone Camera", self.frame_list[-1])
             # updating fps counter
             self.vs.fps_act.update()
-            logging.debug("Writing/showing frame took {} seconds".format(time.time() - now))
             if cv2.waitKey(30) & 0xFF == ord('q'):
                 break
         self._shutdown_camera()
         self.shutdown()
 
     def _shutdown_camera(self):
-        elapsed_cam_time, cam_fps, elapsed_act_time, act_fps = self.vs.stop()
-        logging.info("elasped cam time: {:.2f}".format(elapsed_cam_time))
-        logging.info("approx. cam FPS: {:.2f}".format(cam_fps))
-        logging.info("elasped act time: {:.2f}".format(elapsed_act_time))
-        logging.info("approx. act FPS: {:.2f}".format(act_fps))
-        self.out.release()
+        self.elapsed_cam_time, self.cam_fps, self.elapsed_act_time, self.act_fps = self.vs.stop()
+        logging.info("elasped cam time: {:.2f}".format(self.elapsed_cam_time))
+        logging.info("approx. cam FPS: {:.2f}".format(self.cam_fps))
+        logging.info("elasped act time: {:.2f}".format(self.elapsed_act_time))
+        logging.info("approx. act FPS: {:.2f}".format(self.act_fps))
         cv2.destroyAllWindows()
+        # https://docs.opencv.org/3.0-beta/doc/py_tutorials/py_gui/py_video_display/py_video_display.html
+        # fourcc format and extension (.avi) is particular. expirement
+        # to see what works on your computer
+        print("Writing out video to {}".format(self.video_full_path))
+        self.fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        self.out = cv2.VideoWriter(self.video_full_path, self.fourcc,
+                                   self.act_fps, (int(self.width),
+                                   int(self.height)))
+        for frame in self.frame_list:
+            self.out.write(frame)
+        self.out.release()
 
     def shutdown(self):
         logging.info("shutting down")
