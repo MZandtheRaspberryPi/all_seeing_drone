@@ -34,6 +34,7 @@ debug logging as there is useful logging built in:
 from CoDrone import CoDrone
 import cv2
 import time
+import numpy as np
 import os
 import datetime
 import logging
@@ -132,6 +133,7 @@ class SeeingDrone(CoDrone):
         self.font_thickness = int(1)
 
     def connect(self):
+        """A function to use CoDrone libraries pair funnction to connect to the nearest drone"""
         logging.info("Pairing")
         self.pair()
         logging.info("Paired")
@@ -167,19 +169,91 @@ class SeeingDrone(CoDrone):
         Then, run the script."""
         calibrate()
 
-    def _setup_camera(self):
+    def _setup_camera(self, setup_face_finder=False, min_confidence=.75):
+        """A function to start the video stream from the drone in a separate thread. The seperate thread will
+        continuously grab and store frames so that the main thread can grab frames whenever its free and not wait."""
         # Capture video from the Wifi Connection to FPV module
         # RTSP =(Real Time Streaming Protocol)
         # TODO: eventually make the connection switch automatic
         self.vs = WebcamVideoStream().start()
+        if setup_face_finder:
+            print("loading dnn model and weights from disk")
+            self.model_path = os.path.join(os.path.dirname(__file__), "opencv_models", "res10_300x300_ssd_iter_140000_fp16.caffemodel")
+            self.weights_path = os.path.join(os.path.dirname(__file__), "opencv_models", "deploy.prototxt.txt")
+            self.net = cv2.dnn.readNetFromCaffe(self.weights_path, self.model_path)
+            self.min_confidence = min_confidence
 
-    def show_camera(self):
-        self._setup_camera()
-        print("Staring Camera, press q to quit with camera window in focus. "
+            print("setting up KCF Tracker")
+            # setting up tracker we'll use to track face when dnn can't recognize it
+            self.tracker = cv2.TrackerKCF_create()
+            self.tracker_bb = None
+
+
+    def _find_face(self, frame):
+        """A function to use open cv's deep neural network capability and a pre-trained model to detect
+         faces in a frame. It uses a Single Shot Detector (SSD) with a Res Net base network or a KCF Tracker"""
+        if self.tracker_bb is not None:
+            ok, self.tracker_bb = self.tracker.update(frame)
+            if ok:
+                # Tracking success
+                p1 = (int(self.tracker_bb[0]), int(self.tracker_bb[1]))
+                p2 = (int(self.tracker_bb[0] + self.tracker_bb[2]), int(self.tracker_bb[1] + self.tracker_bb[3]))
+                cv2.rectangle(frame, p1, p2, (255, 0, 0), 2, 1)
+                return frame
+            else:
+                self.tracker_bb = None
+        # grab the frame dimensions and convert it to a blob
+        (h, w) = frame.shape[:2]
+        blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 1.0,
+                                     (300, 300), (104.0, 177.0, 123.0))
+        # pass the blob through the network and obtain the detections and
+        # predictions
+        self.net.setInput(blob)
+        detections = self.net.forward()
+        if detections.shape[2] == 0:
+            self.tracker_bb = None
+            return frame
+        # loop over the detections
+        for i in range(0, detections.shape[2]):
+            # extract the confidence (i.e., probability) associated with the
+            # prediction
+            confidence = detections[0, 0, i, 2]
+            # filter out weak detections by ensuring the `confidence` is
+            # greater than the minimum confidence
+            if confidence < self.min_confidence:
+                continue
+            # compute the (x, y)-coordinates of the bounding box for the
+            # object
+            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+            self.tracker_bb = tuple(box.astype("int"))
+
+            # draw the bounding box of the face along with the associated
+            # probability
+            text = "{:.2f}%".format(confidence * 100)
+            y = self.tracker_bb[1] - 10 if self.tracker_bb[1] - 10 > 10 else self.tracker_bb[1] + 10
+            cv2.rectangle(frame, (self.tracker_bb[0], self.tracker_bb[1]), (self.tracker_bb[2], self.tracker_bb[3]),
+                          (0, 0, 255), 2)
+            cv2.putText(frame, text, (self.tracker_bb[0], y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2)
+            # Initialize tracker with first frame and bounding box
+            self.tracker.init(frame, self.tracker_bb)
+        return frame
+
+
+    def show_camera(self, find_face=False, min_confidence=.6):
+        self._setup_camera(find_face, min_confidence)
+        print("Starting Camera, press q to quit with camera window in focus. "
               "If it doesn't close, check caps lock and num lock.", flush=True)
         self.frame_list = []
         while True:
-            self.frame_list.append(self.vs.read())
+            start_time = time.time()
+            frame = self.vs.read()
+            if find_face:
+                frame = self._find_face(frame)
+            self.frame_list.append(frame)
+            # showing FPS on Frame
+            cv2.putText(self.frame_list[-1], "FPS: {}".format(round(1.0/(time.time() - start_time))), (0, 10),
+                        self.font, self.font_scale, (0, 255, 0), self.font_thickness)
             # displaying the frame and writing it
             cv2.imshow("Drone Camera", self.frame_list[-1])
             # updating fps counter
