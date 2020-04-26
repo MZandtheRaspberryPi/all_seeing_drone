@@ -29,8 +29,8 @@ debug logging as there is useful logging built in:
 
 """
 
-# TODO: figure out drone drift
-# TODO: figure out speed issues with frames including downsampling
+# TODO: figure out drone drift with controller
+# TODO: make flight more flexible rather than just hover
 from CoDrone import CoDrone
 import cv2
 import time
@@ -38,6 +38,8 @@ import numpy as np
 import os
 import datetime
 import logging
+import time
+from threading import Thread
 import pygame
 import argparse
 
@@ -132,6 +134,8 @@ class SeeingDrone(CoDrone):
         self.font_scale = .3
         self.font_thickness = int(1)
 
+        self.connect()
+
     def connect(self):
         """A function to use CoDrone libraries pair funnction to connect to the nearest drone"""
         logging.info("Pairing")
@@ -151,7 +155,7 @@ class SeeingDrone(CoDrone):
                 raise Exception("Drone slept for 10 seconds, killing script")
 
         self.exit_flag = False
-        self.take_off = False
+        self.in_flight = False
         self.sensor_data = {}
         self.sensor_data_counter = 0
         self.exit_duration = 0
@@ -176,6 +180,7 @@ class SeeingDrone(CoDrone):
         # RTSP =(Real Time Streaming Protocol)
         # TODO: eventually make the connection switch automatic
         self.vs = WebcamVideoStream().start()
+        self.exit_flag = False
         if setup_face_finder:
             print("loading dnn model and weights from disk")
             self.model_path = os.path.join(os.path.dirname(__file__), "opencv_models", "res10_300x300_ssd_iter_140000_fp16.caffemodel")
@@ -192,6 +197,7 @@ class SeeingDrone(CoDrone):
     def _find_face(self, frame):
         """A function to use open cv's deep neural network capability and a pre-trained model to detect
          faces in a frame. It uses a Single Shot Detector (SSD) with a Res Net base network or a KCF Tracker"""
+        # if a bounding box exists use the tracker method as its faster than the dnn method (but less accurate probably)
         if self.tracker_bb is not None:
             ok, self.tracker_bb = self.tracker.update(frame)
             if ok:
@@ -240,8 +246,52 @@ class SeeingDrone(CoDrone):
         return frame
 
 
-    def show_camera(self, find_face=False, min_confidence=.6):
+    def _move_to_center_person(self):
+        # this could return 0 distance if no-one is found
+        x_distance_from_center, y_distance_from_center = self._calculate_movements()
+        if x_distance_from_center < 5:
+            yaw = 0
+        if y_distance_from_center < 5:
+            throttle = 0
+        if x_distance_from_center < 5 and y_distance_from_center < 5:
+            return
+        self.set_throttle(5)
+        self.set_yaw(5)
+        print("moving")
+        self.move()
+
+
+    def _calculate_ditsance_from_center(self):
+        if self.tracker_bb is None:
+            return 0, 0
+        # calculate center of image
+        frame_x_center, frame_y_center = self.width/2, self.height/2
+        bb_x_center = (self.tracker_bb[2] - self.tracker_bb[0])/2 + self.tracker_bb[0]
+        bb_y_center = (self.tracker_bb[3] - self.tracker_bb[1])/2 + self.tracker_bb[1]
+        x_distance_from_center = frame_x_center - bb_x_center
+        y_distnace_from_center = frame_y_center - bb_y_center
+        return x_distance_from_center, y_distnace_from_center
+
+    def launch(self, delay=0.0, height=None):
+        """Delay to give time to start recording and showing camera"""
+        time.sleep(delay)
+        if not self.isConnected():
+            print("connecting...")
+            self.connect()
+        print("taking off")
+        self.takeoff()
+        if height is not None:
+            self.go_to_height(height)
+        self.in_flight = True
+
+    def launch_and_show_camera(self, find_face=False):
+        self.show_camera(find_face=find_face, launch=True)
+        self.shutdown()
+
+    def show_camera(self, find_face=False, min_confidence=.6, launch=False):
         self._setup_camera(find_face, min_confidence)
+        if launch:
+            Thread(target=self.launch, args=[2.0, 1000]).start()
         print("Starting Camera, press q to quit with camera window in focus. "
               "If it doesn't close, check caps lock and num lock.", flush=True)
         self.frame_list = []
@@ -252,16 +302,28 @@ class SeeingDrone(CoDrone):
                 frame = self._find_face(frame)
             self.frame_list.append(frame)
             # showing FPS on Frame
-            cv2.putText(self.frame_list[-1], "FPS: {}".format(round(1.0/(time.time() - start_time))), (0, 10),
+            seconds = time.time() - start_time
+            cv2.putText(self.frame_list[-1], "FPS: {}".format(round(1.0/(seconds if seconds != 0.0 else 1/30))), (0, 10),
                         self.font, self.font_scale, (0, 255, 0), self.font_thickness)
             # displaying the frame and writing it
             cv2.imshow("Drone Camera", self.frame_list[-1])
             # updating fps counter
             self.vs.fps_act.update()
-            if cv2.waitKey(30) & 0xFF == ord('q'):
-                break
+            if cv2.waitKey(30) & 0xFF == ord('q') or self.exit_flag:
+                if self.in_flight and not self.exit_flag:
+                    print("landing")
+                    Thread(target=self.land, args=[]).start()
+                    self.exit_flag = True
+                    land_time = time.time()
+                if self.exit_flag and self.is_flying() == False:
+                    if time.time() - land_time > 5:
+                        break
+            if cv2.waitKey(30) & 0xFF == ord('h'):
+                print("hovering")
+                self.hover()
         self._shutdown_camera()
-        self.shutdown()
+
+
 
     def _shutdown_camera(self):
         self.elapsed_cam_time, self.cam_fps, self.elapsed_act_time, self.act_fps = self.vs.stop()
