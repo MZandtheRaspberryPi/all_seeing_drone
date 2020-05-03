@@ -29,8 +29,11 @@ debug logging as there is useful logging built in:
 
 """
 
-# TODO: figure out drone drift with controller
-# TODO: make flight more flexible rather than just hover
+from all_seeing_drone.drone_camera import FPS, WebcamVideoStream, recognize_human, process_video, DroneTracker, DroneDetector
+from all_seeing_drone.drone_util import get_joystick_buttons, update_non_real_time_info, update_sensor_information, hud_display
+from all_seeing_drone.drone_movement import command_top_gun
+from all_seeing_drone.drone_util import calibrate
+
 from CoDrone import CoDrone
 import cv2
 import time
@@ -42,12 +45,10 @@ import time
 from threading import Thread
 import pygame
 import argparse
+import imutils
 
-
-from all_seeing_drone.drone_camera import FPS, WebcamVideoStream, recognize_human, process_video
-from all_seeing_drone.drone_util import get_joystick_buttons, update_non_real_time_info, update_sensor_information, hud_display
-from all_seeing_drone.drone_movement import command_top_gun
-from all_seeing_drone.drone_util import calibrate
+# TODO: figure out drone drift with controller
+# TODO: make flight more flexible rather than just hover
 
 def logger(func):
     def log_func(*args):
@@ -75,7 +76,7 @@ def logger(func):
 
 class SeeingDrone(CoDrone):
     """A class to enable computer vision for the robolink CoDrone"""
-    def __init__(self, video_output_dir=None, post_process=False, recognize_human=False):
+    def __init__(self, video_output_dir=None, logging_level=logging.INFO, post_process=False, recognize_human=False):
         """
         video_output_dir: str the directory on your computer to output videos to
         post_process: bool whether to analyze the video after drone flight is done
@@ -98,7 +99,7 @@ class SeeingDrone(CoDrone):
             logFile.write("")
             logFile.close()
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging_level,
             format="%(asctime)s [%(levelname)-5.5s]  %(message)s",
             handlers=[
                 logging.FileHandler(self.full_path),
@@ -120,21 +121,18 @@ class SeeingDrone(CoDrone):
         # https://forum.robolink.com/topic/148/how-to-control-my-drone-with-opencv
         # https://drive.google.com/drive/folders/1mpqUnG6tBHZDdtv_FG5Z0npH_5DAT785
 
-
-
-        # this is stuff for saving video, used to get  width and height from stream
-        # but now could make it class variables if wanted as using threaded class
-        # width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-        # height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        self.width = 480
-        self.height = 320
-        logging.debug("Height: {} Width: {}".format(self.height, self.width))
         #create the font
         self.font = cv2.FONT_HERSHEY_SIMPLEX
         self.font_scale = .3
         self.font_thickness = int(1)
 
-        self.connect()
+        self.rectangle_thickness = 2
+
+        # this can be used to speed up the deep neural network recognition, by reducing it further if needed
+        # making images smaller means less pixels and less operations to perform
+        self.resize_image_width = 300
+
+        # self.connect()
 
     def connect(self):
         """A function to use CoDrone libraries pair funnction to connect to the nearest drone"""
@@ -173,53 +171,126 @@ class SeeingDrone(CoDrone):
         Then, run the script."""
         calibrate()
 
-    def _setup_camera(self, setup_face_finder=False, min_confidence=.75):
+    def _setup_camera(self, src=r'rtsp://192.168.100.1/cam1/mpeg4', setup_face_finder=False,
+                      min_confidence=.8, tracker_model="kcf"):
         """A function to start the video stream from the drone in a separate thread. The seperate thread will
         continuously grab and store frames so that the main thread can grab frames whenever its free and not wait."""
         # Capture video from the Wifi Connection to FPV module
         # RTSP =(Real Time Streaming Protocol)
         # TODO: eventually make the connection switch automatic
-        self.vs = WebcamVideoStream().start()
+        self.vs = WebcamVideoStream(src=src).start()
         self.exit_flag = False
         if setup_face_finder:
-            print("loading dnn model and weights from disk")
-            self.model_path = os.path.join(os.path.dirname(__file__), "opencv_models", "res10_300x300_ssd_iter_140000_fp16.caffemodel")
-            self.weights_path = os.path.join(os.path.dirname(__file__), "opencv_models", "deploy.prototxt.txt")
-            self.net = cv2.dnn.readNetFromCaffe(self.weights_path, self.model_path)
-            self.min_confidence = min_confidence
-
-            print("setting up KCF Tracker")
-            # setting up tracker we'll use to track face when dnn can't recognize it
-            self.tracker = cv2.TrackerKCF_create()
-            self.tracker_bb = None
+            self.drone_detector = DroneDetector(min_confidence)
+            self.drone_tracker = DroneTracker(tracker_model)
+            self.detector_success = []
+            self.past_bbox = None
+            self.tracker_initialized = False
 
 
-    def _find_face(self, frame):
+    def computer_video_check(self, use_tracker=True):
+        self._setup_camera(setup_face_finder=True, src=0, tracker_model="kcf")
+        time.sleep(1)
+        # self.frame_list = []
+        self.processed_frame_list = []
+        while True:
+            start_time = time.time()
+            frame = self.vs.read()
+            # self.frame_list.append(frame)
+            # resize the frame to speed up calculations
+            frame = imutils.resize(frame, width=self.resize_image_width)
+            frame = self._detect_and_track(frame, use_tracker=use_tracker)
+            # showing FPS on Frame
+            seconds = time.time() - start_time
+            frame = self.vs.show_fps(frame, seconds, (0, 10), self.font, self.font_scale,
+                                     (0, 255, 0), self.font_thickness)
+            self.processed_frame_list.append(frame)
+            # displaying the frame and writing it
+            cv2.imshow("Webcam Camera", self.processed_frame_list[-1])
+            # updating fps counter
+            self.vs.fps_act.update()
+            if cv2.waitKey(1) & 0xFF == ord('q') or self.exit_flag:
+                break
+        self._shutdown_camera(self.processed_frame_list)
+
+
+    def _detect_and_track(self, frame, use_tracker=True):
+        """A function to detect faces and apply a tracker to the last face if the detector faces"""
+        # always prefer the detector as it is more accurate
+        frame, bbox_list = self.drone_detector.find_face(frame, one_face=True, font=self.font, color=(0, 0, 255),
+                                                         rect_thickness=self.rectangle_thickness,
+                                                         font_scale=self.font_scale, font_thickness=self.font_thickness)
+        frame, centroid_list = DroneTracker.add_centroids(frame, bbox_list)
+        # if found some faces, search those regions for eyes, else search all of frame
+        if len(bbox_list) > 0:
+            frame, eye_list = self.drone_detector.find_eyes(frame, bbox_list)
+        else:
+            frame, eye_list = self.drone_detector.find_eyes(frame, [(0, 0, frame.shape[0], frame.shape[1])])
+        frame, eye_centroid_list = DroneTracker.add_centroids(frame, eye_list)
+        if not use_tracker:
+            return frame
+        # if bbox list isn't empty, ie detector found some faces
+        if bbox_list:
+            self.past_bbox = bbox_list
+            self.detector_success.append(True)
+            if self.tracker_initialized:
+                self.tracker_initialized = False
+                self.drone_tracker.clear_tracker()
+            return frame
+        else:
+            self.detector_success.append(False)
+        # if the detector fails, we have a past bounding box, and tracker isn't initialized, initialize it
+        if not self.detector_success[-1] and len(self.past_bbox) >= 1 and not self.tracker_initialized:
+            logging.debug("detector failed, initializing tracker")
+            self.drone_tracker.initialize_tracker(frame, self.past_bbox)
+            self.tracker_initialized = True
+        # if detector fails, we have a past bounding box, and tracker is initialized then use it
+        if not self.detector_success[-1] and len(self.past_bbox) >= 1 and self.tracker_initialized:
+            logging.debug("using tracker")
+            frame, bbox_list = self.drone_tracker.track(frame)
+            self.past_bbox = bbox_list
+            return frame
+
+
+
+    def _find_face(self, frame, use_tracker=False):
         """A function to use open cv's deep neural network capability and a pre-trained model to detect
          faces in a frame. It uses a Single Shot Detector (SSD) with a Res Net base network or a KCF Tracker"""
+        start_time = time.time()
         # if a bounding box exists use the tracker method as its faster than the dnn method (but less accurate probably)
-        if self.tracker_bb is not None:
+        if self.tracker_bb is not None and use_tracker:
+            logging.debug("using tracker")
             ok, self.tracker_bb = self.tracker.update(frame)
+            logging.debug("got result from tracker in {} seconds".format(time.time() - start_time))
             if ok:
                 # Tracking success
                 p1 = (int(self.tracker_bb[0]), int(self.tracker_bb[1]))
                 p2 = (int(self.tracker_bb[0] + self.tracker_bb[2]), int(self.tracker_bb[1] + self.tracker_bb[3]))
                 cv2.rectangle(frame, p1, p2, (255, 0, 0), 2, 1)
+                self.tracker_count += 1
+                if self.tracker_count > 180:
+                    self.tracker_count = 0
+                    self.tracker_bb = None
                 return frame
             else:
                 self.tracker_bb = None
+        logging.info("using dnn")
         # grab the frame dimensions and convert it to a blob
         (h, w) = frame.shape[:2]
-        blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 1.0,
-                                     (300, 300), (104.0, 177.0, 123.0))
+        blob = cv2.dnn.blobFromImage(frame, 1.0,
+                                     (w, h), (104.0, 177.0, 123.0))
+        logging.debug("made blob in {} seconds".format(time.time() - start_time))
         # pass the blob through the network and obtain the detections and
         # predictions
+        start_time = time.time()
         self.net.setInput(blob)
         detections = self.net.forward()
+        logging.debug("got result from dnn in {} seconds".format(time.time() - start_time))
         if detections.shape[2] == 0:
             self.tracker_bb = None
             return frame
         # loop over the detections
+        loop_start_time = time.time()
         for i in range(0, detections.shape[2]):
             # extract the confidence (i.e., probability) associated with the
             # prediction
@@ -232,6 +303,10 @@ class SeeingDrone(CoDrone):
             # object
             box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
             self.tracker_bb = tuple(box.astype("int"))
+            if use_tracker:
+                start_time = time.time()
+                self.tracker.init(frame, self.tracker_bb)
+                logging.debug("initialized tracker in {} seconds".format(time.time() - start_time))
 
             # draw the bounding box of the face along with the associated
             # probability
@@ -241,8 +316,8 @@ class SeeingDrone(CoDrone):
                           (0, 0, 255), 2)
             cv2.putText(frame, text, (self.tracker_bb[0], y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2)
-            # Initialize tracker with first frame and bounding box
-            self.tracker.init(frame, self.tracker_bb)
+        logging.debug("finished loop in {} seconds".format(time.time() - loop_start_time))
+
         return frame
 
 
@@ -251,14 +326,20 @@ class SeeingDrone(CoDrone):
         x_distance_from_center, y_distance_from_center = self._calculate_movements()
         if x_distance_from_center < 5:
             yaw = 0
+        else:
+            yaw = 5
         if y_distance_from_center < 5:
             throttle = 0
+        else:
+            throttle = 5
         if x_distance_from_center < 5 and y_distance_from_center < 5:
             return
         self.set_throttle(5)
         self.set_yaw(5)
         print("moving")
         self.move()
+        self.set_throttle(0)
+        self.set_yaw(0)
 
 
     def _calculate_ditsance_from_center(self):
@@ -303,7 +384,10 @@ class SeeingDrone(CoDrone):
             self.frame_list.append(frame)
             # showing FPS on Frame
             seconds = time.time() - start_time
-            cv2.putText(self.frame_list[-1], "FPS: {}".format(round(1.0/(seconds if seconds != 0.0 else 1/30))), (0, 10),
+            # camera is limited to 30fps so even we grab more frames per second, they'll be the same frames
+            if seconds < 1/30:
+                seconds = 1/30
+            cv2.putText(self.frame_list[-1], "FPS: {}".format(round(1.0/(seconds))), (0, 10),
                         self.font, self.font_scale, (0, 255, 0), self.font_thickness)
             # displaying the frame and writing it
             cv2.imshow("Drone Camera", self.frame_list[-1])
@@ -325,7 +409,7 @@ class SeeingDrone(CoDrone):
 
 
 
-    def _shutdown_camera(self):
+    def _shutdown_camera(self, frame_list):
         self.elapsed_cam_time, self.cam_fps, self.elapsed_act_time, self.act_fps = self.vs.stop()
         logging.info("elasped cam time: {:.2f}".format(self.elapsed_cam_time))
         logging.info("approx. cam FPS: {:.2f}".format(self.cam_fps))
@@ -337,10 +421,11 @@ class SeeingDrone(CoDrone):
         # to see what works on your computer
         print("Writing out video to {}".format(self.video_full_path))
         self.fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        height, width = frame_list[-1].shape[:2]
         self.out = cv2.VideoWriter(self.video_full_path, self.fourcc,
-                                   self.act_fps, (int(self.width),
-                                   int(self.height)))
-        for frame in self.frame_list:
+                                   self.act_fps, (int(width),
+                                   int(height)))
+        for frame in frame_list:
             self.out.write(frame)
         self.out.release()
 

@@ -1,6 +1,7 @@
 CoDrone==1.2.5
 colorama==0.4.3
 cycler==0.10.0
+imutils==0.5.3
 kiwisolver==1.2.0
 matplotlib==3.2.1
 numpy==1.18.3
