@@ -29,14 +29,15 @@ debug logging as there is useful logging built in:
 
 """
 
-from all_seeing_drone.drone_camera import FPS, WebcamVideoStream, recognize_human, process_video, DroneTracker, DroneDetector
+from all_seeing_drone.drone_camera import FPS, WebcamVideoStream, recognize_human, process_video, DroneVision
 from all_seeing_drone.drone_util import get_joystick_buttons, update_non_real_time_info, update_sensor_information, hud_display
-from all_seeing_drone.drone_movement import command_top_gun
+from all_seeing_drone.drone_movement import command_top_gun, DroneController
 from all_seeing_drone.drone_util import calibrate
 
 from CoDrone import CoDrone
+from CoDrone.receiver import Header, DataType
+from CoDrone.protocol import Control
 import cv2
-import time
 import numpy as np
 import os
 import datetime
@@ -49,6 +50,11 @@ import imutils
 
 # TODO: figure out drone drift with controller
 # TODO: make flight more flexible rather than just hover
+# TODO: figure out yaw overcorrection and why bbox list has stuff in it if it finds something than later doesn't resulting in movements based off of stuff in the past
+# need to start and init PID when find a face. Need to kill it when don't find a face and then reinit it when find one.
+# need to see if 14 fps, 14 updates to pid per second is responsive enough.
+# need to have this sending command to drone.
+# need to test instantaneous moves w/ drones, or for 1/14th of a second (assuming 14fps)
 
 def logger(func):
     def log_func(*args):
@@ -132,8 +138,6 @@ class SeeingDrone(CoDrone):
         # making images smaller means less pixels and less operations to perform
         self.resize_image_width = 300
 
-        # self.connect()
-
     def connect(self):
         """A function to use CoDrone libraries pair funnction to connect to the nearest drone"""
         logging.info("Pairing")
@@ -181,25 +185,22 @@ class SeeingDrone(CoDrone):
         self.vs = WebcamVideoStream(src=src).start()
         self.exit_flag = False
         if setup_face_finder:
-            self.drone_detector = DroneDetector(min_confidence)
-            self.drone_tracker = DroneTracker(tracker_model)
-            self.detector_success = []
-            self.past_bbox = None
-            self.tracker_initialized = False
+            self.drone_detector = DroneVision(min_confidence, tracker_model="kcf")
 
 
-    def computer_video_check(self, use_tracker=True):
-        self._setup_camera(setup_face_finder=True, src=0, tracker_model="kcf")
-        time.sleep(1)
+    def computer_video_check(self, use_tracker=True, src=0):
+        self._setup_camera(setup_face_finder=True, src=src, tracker_model="kcf")
         # self.frame_list = []
-        self.processed_frame_list = []
+        self.processed_frame_list = [self.vs.frame_list[-1]]
         while True:
             start_time = time.time()
             frame = self.vs.read()
             # self.frame_list.append(frame)
             # resize the frame to speed up calculations
             frame = imutils.resize(frame, width=self.resize_image_width)
-            frame = self._detect_and_track(frame, use_tracker=use_tracker)
+            frame = self.drone_detector.detect_and_track(frame, use_tracker=use_tracker, font=self.font, color=(0, 0, 255),
+                                                         rect_thickness=self.rectangle_thickness,
+                                                         font_scale=self.font_scale, font_thickness=self.font_thickness)
             # showing FPS on Frame
             seconds = time.time() - start_time
             frame = self.vs.show_fps(frame, seconds, (0, 10), self.font, self.font_scale,
@@ -214,48 +215,11 @@ class SeeingDrone(CoDrone):
         self._shutdown_camera(self.processed_frame_list)
 
 
-    def _detect_and_track(self, frame, use_tracker=True):
-        """A function to detect faces and apply a tracker to the last face if the detector faces"""
-        # always prefer the detector as it is more accurate
-        frame, bbox_list = self.drone_detector.find_face(frame, one_face=True, font=self.font, color=(0, 0, 255),
-                                                         rect_thickness=self.rectangle_thickness,
-                                                         font_scale=self.font_scale, font_thickness=self.font_thickness)
-        frame, centroid_list = DroneTracker.add_centroids(frame, bbox_list)
-        # if found some faces, search those regions for eyes, else search all of frame
-        if len(bbox_list) > 0:
-            frame, eye_list = self.drone_detector.find_eyes(frame, bbox_list)
-        else:
-            frame, eye_list = self.drone_detector.find_eyes(frame, [(0, 0, frame.shape[0], frame.shape[1])])
-        frame, eye_centroid_list = DroneTracker.add_centroids(frame, eye_list)
-        if not use_tracker:
-            return frame
-        # if bbox list isn't empty, ie detector found some faces
-        if bbox_list:
-            self.past_bbox = bbox_list
-            self.detector_success.append(True)
-            if self.tracker_initialized:
-                self.tracker_initialized = False
-                self.drone_tracker.clear_tracker()
-            return frame
-        else:
-            self.detector_success.append(False)
-        # if the detector fails, we have a past bounding box, and tracker isn't initialized, initialize it
-        if not self.detector_success[-1] and len(self.past_bbox) >= 1 and not self.tracker_initialized:
-            logging.debug("detector failed, initializing tracker")
-            self.drone_tracker.initialize_tracker(frame, self.past_bbox)
-            self.tracker_initialized = True
-        # if detector fails, we have a past bounding box, and tracker is initialized then use it
-        if not self.detector_success[-1] and len(self.past_bbox) >= 1 and self.tracker_initialized:
-            logging.debug("using tracker")
-            frame, bbox_list = self.drone_tracker.track(frame)
-            self.past_bbox = bbox_list
-            return frame
-
 
 
     def _find_face(self, frame, use_tracker=False):
         """A function to use open cv's deep neural network capability and a pre-trained model to detect
-         faces in a frame. It uses a Single Shot Detector (SSD) with a Res Net base network or a KCF Tracker"""
+         faces in a frame. It uses a Single Shot Detector (SSD) with a Res Net base network and a KCF Tracker"""
         start_time = time.time()
         # if a bounding box exists use the tracker method as its faster than the dnn method (but less accurate probably)
         if self.tracker_bb is not None and use_tracker:
@@ -274,7 +238,7 @@ class SeeingDrone(CoDrone):
                 return frame
             else:
                 self.tracker_bb = None
-        logging.info("using dnn")
+        logging.debug("using dnn")
         # grab the frame dimensions and convert it to a blob
         (h, w) = frame.shape[:2]
         blob = cv2.dnn.blobFromImage(frame, 1.0,
@@ -320,38 +284,45 @@ class SeeingDrone(CoDrone):
 
         return frame
 
+    def move(self):
+        """overridding codrone's move command to be instantaneous like the arduino version and not infinite"""
+        self.send_control(*self._control.getAll())
 
-    def _move_to_center_person(self):
-        # this could return 0 distance if no-one is found
-        x_distance_from_center, y_distance_from_center = self._calculate_movements()
-        if x_distance_from_center < 5:
-            yaw = 0
-        else:
-            yaw = 5
-        if y_distance_from_center < 5:
-            throttle = 0
-        else:
-            throttle = 5
-        if x_distance_from_center < 5 and y_distance_from_center < 5:
-            return
-        self.set_throttle(5)
-        self.set_yaw(5)
-        print("moving")
+    def send_control(self, roll, pitch, yaw, throttle):
+        """This function sends control request.
+
+        Args:
+            roll: the power of the roll, which is an int from -100 to 100
+            pitch: the power of the pitch, which is an int from -100 to 100
+            yaw: the power of the yaw, which is an int from -100 to 100
+            throttle: the power of the throttle, which is an int from -100 to 100
+
+        Returns: True if responds well, false otherwise.
+        """
+        header = Header()
+
+        header.dataType = DataType.Control
+        header.length = Control.getSize()
+
+        control = Control()
+        control.setAll(roll, pitch, yaw, throttle)
+
+        receiving_flag = self._storageCount.d[DataType.Attitude]
+
+        self._transfer(header, control)
+        time.sleep(0.02)
+        if self._storageCount.d[DataType.Attitude] == receiving_flag:
+            self._print_error(">> Failed to send control.")
+
+        return self._storageCount.d[DataType.Attitude] == receiving_flag
+
+    def _move_to_center_person(self, throttle, yaw):
+        self.set_throttle(throttle)
+        self.set_yaw(yaw)
         self.move()
         self.set_throttle(0)
         self.set_yaw(0)
 
-
-    def _calculate_ditsance_from_center(self):
-        if self.tracker_bb is None:
-            return 0, 0
-        # calculate center of image
-        frame_x_center, frame_y_center = self.width/2, self.height/2
-        bb_x_center = (self.tracker_bb[2] - self.tracker_bb[0])/2 + self.tracker_bb[0]
-        bb_y_center = (self.tracker_bb[3] - self.tracker_bb[1])/2 + self.tracker_bb[1]
-        x_distance_from_center = frame_x_center - bb_x_center
-        y_distnace_from_center = frame_y_center - bb_y_center
-        return x_distance_from_center, y_distnace_from_center
 
     def launch(self, delay=0.0, height=None):
         """Delay to give time to start recording and showing camera"""
@@ -369,44 +340,64 @@ class SeeingDrone(CoDrone):
         self.show_camera(find_face=find_face, launch=True)
         self.shutdown()
 
-    def show_camera(self, find_face=False, min_confidence=.6, launch=False):
-        self._setup_camera(find_face, min_confidence)
+    def setup_drone_controller(self):
+        self.drone_controller = DroneController()
+        self.pid_started = False
+
+    def activate_drone(self, find_face=False, min_confidence=.85, launch=False, use_tracker=True,
+                       follow_face=True):
+        self.connect()
+        self._setup_camera(setup_face_finder=find_face, min_confidence=min_confidence, tracker_model="kcf")
+        if follow_face:
+            self.setup_drone_controller()
         if launch:
             Thread(target=self.launch, args=[2.0, 1000]).start()
-        print("Starting Camera, press q to quit with camera window in focus. "
-              "If it doesn't close, check caps lock and num lock.", flush=True)
-        self.frame_list = []
+        print("Starting Camera, press q to quit and land drone with camera window in focus. "
+              "If it doesn't close, check caps lock and num lock. \n"
+              "Press H to hover to continue flight.", flush=True)
+        self.processed_frame_list = [self.vs.read()]
         while True:
             start_time = time.time()
             frame = self.vs.read()
             if find_face:
-                frame = self._find_face(frame)
-            self.frame_list.append(frame)
+                # resize the frame to speed up calculations
+                frame = imutils.resize(frame, width=self.resize_image_width)
+                frame, bbox_list = self.drone_detector.detect_and_track(frame, use_tracker=use_tracker, font=self.font, color=(0, 0, 255),
+                                                             rect_thickness=self.rectangle_thickness,
+                                                             font_scale=self.font_scale, font_thickness=self.font_thickness)
+                print(bbox_list, flush=True)
+            if follow_face and len(bbox_list) == 1 and not self.exit_flag:
+                throttle, yaw = self.drone_controller.get_throttle_and_yaw(frame, bbox_list[0], write_frame_debug_info=True)
+                self.pid_started = True
+                # setting move duration to roughly time to process a frame. This is dependent on your computer/setup
+                self._move_to_center_person(throttle, yaw)
+            if self.pid_started and not len(bbox_list) == 1:
+                self.drone_controller.reset()
+
             # showing FPS on Frame
             seconds = time.time() - start_time
-            # camera is limited to 30fps so even we grab more frames per second, they'll be the same frames
-            if seconds < 1/30:
-                seconds = 1/30
-            cv2.putText(self.frame_list[-1], "FPS: {}".format(round(1.0/(seconds))), (0, 10),
-                        self.font, self.font_scale, (0, 255, 0), self.font_thickness)
+            frame = self.vs.show_fps(frame, seconds, (0, 10), self.font, self.font_scale,
+                                     (0, 255, 0), self.font_thickness)
+            self.processed_frame_list.append(frame)
             # displaying the frame and writing it
-            cv2.imshow("Drone Camera", self.frame_list[-1])
+            cv2.imshow("Drone Camera", self.processed_frame_list[-1])
             # updating fps counter
             self.vs.fps_act.update()
-            if cv2.waitKey(30) & 0xFF == ord('q') or self.exit_flag:
-                if self.in_flight and not self.exit_flag:
-                    print("landing")
+            if cv2.waitKey(1) & 0xFF == ord('q') or self.exit_flag:
+                if not self.exit_flag:
+                    logging.info("landing")
                     Thread(target=self.land, args=[]).start()
                     self.exit_flag = True
                     land_time = time.time()
                 if self.exit_flag and self.is_flying() == False:
-                    if time.time() - land_time > 5:
+                    if time.time() - land_time > 3:
                         break
-            if cv2.waitKey(30) & 0xFF == ord('h'):
+            if cv2.waitKey(1) & 0xFF == ord('h'):
                 print("hovering")
                 self.hover()
-        self._shutdown_camera()
 
+        self._shutdown_camera(self.processed_frame_list)
+        self.shutdown()
 
 
     def _shutdown_camera(self, frame_list):

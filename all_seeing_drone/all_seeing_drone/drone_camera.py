@@ -49,10 +49,10 @@ class WebcamVideoStream:
         # initialize the video camera stream and read the first frame
         # from the stream
         self.stream = cv2.VideoCapture(src)
+        time.sleep(2)
         (self._grabbed, self._frame) = self.stream.read()
-
         self.height, self.width = self._frame.shape[0:2]
-        logging.debug("Height: {} Width: {}".format(self.height, self.width))
+        logging.debug("Pre-resizing Height: {} Pre-resizing Width: {}".format(self.height, self.width))
 
         self.camera_fps = camera_fps
 
@@ -71,6 +71,7 @@ class WebcamVideoStream:
         self.fps_act = FPS().start()
 
         self.thread_list = []
+
         self.thread_list.append(Thread(target=self.update, args=()))
         self.thread_list[0].start()
         return self
@@ -243,8 +244,8 @@ class DroneTracker():
             cv2.circle(frame, (centroid[0], centroid[1]), circle_radius, color, circle_thickness)
         return frame, centroid_list
 
-class DroneDetector():
-    def __init__(self, min_confidence=.8):
+class DroneVision():
+    def __init__(self, min_confidence=.8, tracker_model="kcf"):
         print("loading dnn model and weights from disk")
         self.model_path = os.path.join(os.path.dirname(__file__), "opencv_models",
                                        "res10_300x300_ssd_iter_140000_fp16.caffemodel")
@@ -254,9 +255,13 @@ class DroneDetector():
         print("loading eye detector")
         self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_eye.xml')
 
+        self.drone_tracker = DroneTracker(tracker_model)
+        self.detector_success = []
+        self.past_bbox = []
+        self.tracker_initialized = False
+
     def find_face(self, frame, one_face=False, font=cv2.FONT_HERSHEY_SIMPLEX, color=(0, 0, 255), rect_thickness=2,
                   font_scale=.2, font_thickness=2):
-        logging.info("using dnn")
         start_time = time.time()
         # grab the frame dimensions and convert it to a blob
         (h, w) = frame.shape[:2]
@@ -300,6 +305,55 @@ class DroneDetector():
                 break
         logging.debug("finished loop in {} seconds".format(time.time() - loop_start_time))
         return frame, box_list
+
+    def detect_and_track(self, frame, use_tracker=True, font=cv2.FONT_HERSHEY_SIMPLEX, color=(0, 0, 255),
+                         rect_thickness=2, font_scale=.2, font_thickness=2, find_eyes=False):
+        """A function to detect faces and eyes, and if don't detect but had detected in the past,
+        apply a tracker to the last face if the detector faces"""
+        # always prefer the detector as it is more accurate
+        frame, bbox_list = self.find_face(frame, one_face=True, font=font, color=color,
+                                                         rect_thickness=rect_thickness,
+                                                         font_scale=font_scale, font_thickness=font_thickness)
+        frame, centroid_list = DroneTracker.add_centroids(frame, bbox_list)
+        # if found some faces, search those regions for eyes, else search all of frame
+        if len(bbox_list) > 0 and find_eyes:
+            frame, eye_list = self.find_eyes(frame, bbox_list)
+        elif find_eyes:
+            frame, eye_list = self.find_eyes(frame, [(0, 0, frame.shape[0], frame.shape[1])])
+        if find_eyes:
+            frame, eye_centroid_list = DroneTracker.add_centroids(frame, eye_list)
+            bbox_list += eye_centroid_list
+        if not use_tracker:
+            return frame, bbox_list
+        # if bbox list isn't empty, ie detector found some faces
+        if len(bbox_list) >= 1:
+            self.past_bbox = bbox_list
+            self.detector_success.append(True)
+            if self.tracker_initialized:
+                self.tracker_initialized = False
+                self.drone_tracker.clear_tracker()
+            return frame, bbox_list
+        else:
+            self.detector_success.append(False)
+        # if the detector fails, we have a past bounding box, and tracker isn't initialized, initialize it
+        if not self.detector_success[-1] and len(self.past_bbox) >= 1 and not self.tracker_initialized:
+            logging.debug("detector failed, initializing tracker")
+            self.drone_tracker.initialize_tracker(frame, self.past_bbox)
+            self.tracker_initialized = True
+            frame, bbox_list = self.drone_tracker.track(frame)
+            self.past_bbox = bbox_list
+            return frame, bbox_list
+        # if detector fails, we have a past bounding box, and tracker is initialized then use it
+        if not self.detector_success[-1] and len(self.past_bbox) >= 1 and self.tracker_initialized:
+            logging.debug("using tracker")
+            frame, bbox_list = self.drone_tracker.track(frame)
+            self.past_bbox = bbox_list
+            return frame, bbox_list
+        # if detector fails and we don't have a past bounding box return the frame
+        if not self.detector_success[-1] and len(self.past_bbox) == 0:
+            logging.debug("detector didn't find anything, no past bbox so can't use tracker")
+            self.tracker_initialized = False
+            return frame, bbox_list
 
     def find_eyes(self, frame, roi_list, color=(0, 255, 0), rect_thickness=2):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
