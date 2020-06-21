@@ -15,11 +15,10 @@ class DroneController():
         # sample_time is minimum time that this will update. here, it'll be bounded naturally by the FPS
         # of the computer vision system, but putting in a limit in case other folks run on upgraded hardware where that
         # isn't a bottleneck
-        # TODO: can these handle negative errors and negative outputs?
         self.setpoint_throttle = setpoint_throttle
         self.setpoint_yaw = setpoint_yaw
-        self.yaw_pid = PID(Kp=.5, Ki=0.0, Kd=0.0, setpoint=self.setpoint_throttle, sample_time=round(1/14, 2), output_limits=(-100, 100))
-        self.throttle_pid = PID(Kp=.1, Ki=0.0, Kd=0.0, setpoint=self.setpoint_yaw, sample_time=round(1/14, 2), output_limits=(-100, 100))
+        self.yaw_pid = PID(Kp=.1, Ki=0.1, Kd=0.2, setpoint=self.setpoint_throttle, sample_time=round(1/14, 2), output_limits=(-10, 10))
+        self.throttle_pid = PID(Kp=.5, Ki=0.3, Kd=0.4, setpoint=self.setpoint_yaw, sample_time=round(1/14, 2), output_limits=(-60, 60))
         self.throttle_errors = []
         self.throttle_outputs = []
         self.yaw_errors = []
@@ -51,16 +50,16 @@ class DroneController():
         self.yaw_outputs.append(yaw_output)
         if write_frame_debug_info:
             self.write_debug(frame, x_error, y_error, throttle_output, yaw_output)
-        return int(throttle_output), int(yaw_output)
+        return int(throttle_output), int(yaw_output), frame
 
     def write_debug(self, frame, x_error, y_error, throttle_output, yaw_output, font=cv2.FONT_HERSHEY_SIMPLEX,
                     color=(0, 255, 0), font_scale=.3, font_thickness=1):
         components_throttle = self.throttle_pid.components
         components_yaw = self.yaw_pid.components
-        throttle_text = "Throttle: {} (y_error: {})".format(throttle_output, y_error)
-        throttle_component_text = "Throttle components: {}".format(components_throttle)
-        yaw_text = "Yaw: {} (x_error: {})".format(yaw_output, x_error)
-        yaw_component_text = "Yaw components: {}".format(components_yaw)
+        throttle_text = "Throttle: {} (y_error: {})".format(round(throttle_output, 2), round(y_error, 2))
+        throttle_component_text = "Throttle components: {}".format([round(component, 2) for component in components_throttle])
+        yaw_text = "Yaw: {} (x_error: {})".format(round(yaw_output, 2), round(x_error, 2))
+        yaw_component_text = "Yaw components: {}".format([round(component, 2) for component in components_yaw])
         cv2.putText(frame, throttle_text, (0, 20),
                     font, font_scale, color, font_thickness)
         cv2.putText(frame, throttle_component_text, (0, 30),

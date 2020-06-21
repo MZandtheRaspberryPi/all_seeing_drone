@@ -108,8 +108,8 @@ class SeeingDrone(CoDrone):
             level=logging_level,
             format="%(asctime)s [%(levelname)-5.5s]  %(message)s",
             handlers=[
-                logging.FileHandler(self.full_path),
-                logging.StreamHandler()
+                logging.FileHandler(self.full_path)
+                # logging.StreamHandler()
             ])
 
         self.fps_actual = 29.0
@@ -175,7 +175,7 @@ class SeeingDrone(CoDrone):
         Then, run the script."""
         calibrate()
 
-    def _setup_camera(self, src=r'rtsp://192.168.100.1/cam1/mpeg4', setup_face_finder=False,
+    def _setup_camera(self, src=r'rtsp://192.168.100.1/cam1/mpeg4', setup_face_finder=False, setup_tracker=False,
                       min_confidence=.8, tracker_model="kcf"):
         """A function to start the video stream from the drone in a separate thread. The seperate thread will
         continuously grab and store frames so that the main thread can grab frames whenever its free and not wait."""
@@ -185,7 +185,7 @@ class SeeingDrone(CoDrone):
         self.vs = WebcamVideoStream(src=src).start()
         self.exit_flag = False
         if setup_face_finder:
-            self.drone_detector = DroneVision(min_confidence, tracker_model="kcf")
+            self.drone_detector = DroneVision(min_confidence, setup_tracker=setup_tracker, tracker_model="kcf")
 
 
     def computer_video_check(self, use_tracker=True, src=0):
@@ -284,7 +284,7 @@ class SeeingDrone(CoDrone):
 
         return frame
 
-    def move(self):
+    def autonomous_move(self):
         """overridding codrone's move command to be instantaneous like the arduino version and not infinite"""
         self.send_control(*self._control.getAll())
 
@@ -319,22 +319,28 @@ class SeeingDrone(CoDrone):
     def _move_to_center_person(self, throttle, yaw):
         self.set_throttle(throttle)
         self.set_yaw(yaw)
-        self.move()
+        self.autonomous_move()
         self.set_throttle(0)
         self.set_yaw(0)
 
 
     def launch(self, delay=0.0, height=None):
         """Delay to give time to start recording and showing camera"""
+        self.launching = True
         time.sleep(delay)
         if not self.isConnected():
             print("connecting...")
             self.connect()
         print("taking off")
+        logging.info("taking off")
         self.takeoff()
         if height is not None:
-            self.go_to_height(height)
+            # self.go_to_height(height)
+            self.move(3, 0, 0, 0, 75)
         self.in_flight = True
+        print("done taking off")
+        logging.info("done taking off")
+        self.launching = False
 
     def launch_and_show_camera(self, find_face=False):
         self.show_camera(find_face=find_face, launch=True)
@@ -347,7 +353,8 @@ class SeeingDrone(CoDrone):
     def activate_drone(self, find_face=False, min_confidence=.85, launch=False, use_tracker=True,
                        follow_face=True):
         self.connect()
-        self._setup_camera(setup_face_finder=find_face, min_confidence=min_confidence, tracker_model="kcf")
+        self._setup_camera(setup_face_finder=find_face, setup_tracker=use_tracker,
+                           min_confidence=min_confidence, tracker_model="kcf")
         if follow_face:
             self.setup_drone_controller()
         if launch:
@@ -365,17 +372,21 @@ class SeeingDrone(CoDrone):
                 frame, bbox_list = self.drone_detector.detect_and_track(frame, use_tracker=use_tracker, font=self.font, color=(0, 0, 255),
                                                              rect_thickness=self.rectangle_thickness,
                                                              font_scale=self.font_scale, font_thickness=self.font_thickness)
-                print(bbox_list, flush=True)
-            if follow_face and len(bbox_list) == 1 and not self.exit_flag:
-                throttle, yaw = self.drone_controller.get_throttle_and_yaw(frame, bbox_list[0], write_frame_debug_info=True)
+            if follow_face and len(bbox_list) == 1 and not self.exit_flag and not self.launching:
+                logging.debug("found face, bbox list is: {}".format(bbox_list))
+                throttle, yaw, frame = self.drone_controller.get_throttle_and_yaw(frame, bbox_list[0], write_frame_debug_info=True)
+                logging.debug("throttle is {} yaw is {}".format(throttle, yaw))
                 self.pid_started = True
-                # setting move duration to roughly time to process a frame. This is dependent on your computer/setup
+                # overidden CoDrone move command to be instantaneous
                 self._move_to_center_person(throttle, yaw)
+                logging.debug("moved")
             if self.pid_started and not len(bbox_list) == 1:
+                self.pid_started = False
                 self.drone_controller.reset()
 
             # showing FPS on Frame
             seconds = time.time() - start_time
+            logging.debug("seconds to process frame is {}".format(seconds))
             frame = self.vs.show_fps(frame, seconds, (0, 10), self.font, self.font_scale,
                                      (0, 255, 0), self.font_thickness)
             self.processed_frame_list.append(frame)
@@ -385,12 +396,14 @@ class SeeingDrone(CoDrone):
             self.vs.fps_act.update()
             if cv2.waitKey(1) & 0xFF == ord('q') or self.exit_flag:
                 if not self.exit_flag:
+                    print("landing")
                     logging.info("landing")
                     Thread(target=self.land, args=[]).start()
                     self.exit_flag = True
                     land_time = time.time()
-                if self.exit_flag and self.is_flying() == False:
+                if self.exit_flag:
                     if time.time() - land_time > 3:
+                        logging.debug("exiting loop")
                         break
             if cv2.waitKey(1) & 0xFF == ord('h'):
                 print("hovering")
@@ -423,11 +436,6 @@ class SeeingDrone(CoDrone):
     def shutdown(self):
         logging.info("shutting down")
         self.disconnect()
-
-
-
-
-
 
 
 def main():

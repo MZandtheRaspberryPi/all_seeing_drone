@@ -4,5 +4,5 @@ from all_seeing_drone.drone import SeeingDrone
 import logging
 
 if __name__ == "__main__":
-    drone = SeeingDrone("C:\\Users\\Mikey\\Videos\\droneVideos\\", logging_level=logging.INFO)
-    drone.activate_drone(find_face=True, launch=True)
+    drone = SeeingDrone("C:\\Users\\Mikey\\Videos\\droneVideos\\", logging_level=logging.DEBUG)
+    drone.activate_drone(find_face=True, launch=True, use_tracker=False)

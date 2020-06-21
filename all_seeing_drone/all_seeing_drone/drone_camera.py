@@ -245,20 +245,22 @@ class DroneTracker():
         return frame, centroid_list
 
 class DroneVision():
-    def __init__(self, min_confidence=.8, tracker_model="kcf"):
+    def __init__(self, min_confidence=.8, setup_eye_detector=True, setup_tracker=False, tracker_model="kcf"):
         print("loading dnn model and weights from disk")
         self.model_path = os.path.join(os.path.dirname(__file__), "opencv_models",
                                        "res10_300x300_ssd_iter_140000_fp16.caffemodel")
         self.weights_path = os.path.join(os.path.dirname(__file__), "opencv_models", "deploy.prototxt.txt")
         self.net = cv2.dnn.readNetFromCaffe(self.weights_path, self.model_path)
         self.min_confidence = min_confidence
-        print("loading eye detector")
-        self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_eye.xml')
+        if setup_eye_detector:
+            print("loading eye detector")
+            self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_eye.xml')
 
-        self.drone_tracker = DroneTracker(tracker_model)
-        self.detector_success = []
-        self.past_bbox = []
-        self.tracker_initialized = False
+        if setup_tracker:
+            self.drone_tracker = DroneTracker(tracker_model)
+            self.detector_success = []
+            self.past_bbox = []
+            self.tracker_initialized = False
 
     def find_face(self, frame, one_face=False, font=cv2.FONT_HERSHEY_SIMPLEX, color=(0, 0, 255), rect_thickness=2,
                   font_scale=.2, font_thickness=2):
