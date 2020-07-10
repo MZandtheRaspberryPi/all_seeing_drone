@@ -245,6 +245,10 @@ class DroneTracker():
         return frame, centroid_list
 
 class DroneVision():
+    # this is roughly the pixel area of papa's face when he's 1meter away from the drone camera
+    # self.bbox_area_when_1_m = 1700
+    # roughly my face size when 1m away
+    bbox_area_when_1_m = 2900
     def __init__(self, min_confidence=.8, setup_eye_detector=True, setup_tracker=False, tracker_model="kcf"):
         print("loading dnn model and weights from disk")
         self.model_path = os.path.join(os.path.dirname(__file__), "opencv_models",
@@ -256,11 +260,12 @@ class DroneVision():
             print("loading eye detector")
             self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_eye.xml')
 
+        self.detector_success = []
+        self.tracker_initialized = False
+        self.past_bbox = []
         if setup_tracker:
             self.drone_tracker = DroneTracker(tracker_model)
-            self.detector_success = []
-            self.past_bbox = []
-            self.tracker_initialized = False
+
 
     def find_face(self, frame, one_face=False, font=cv2.FONT_HERSHEY_SIMPLEX, color=(0, 0, 255), rect_thickness=2,
                   font_scale=.2, font_thickness=2):
@@ -370,3 +375,16 @@ class DroneVision():
                 cv2.rectangle(frame, (ex + x1, ey + y1), (ex + ew + x1, ey + eh + y1), (0, 127, 255), 2)
                 eye_locations.append((ex + x1, ey + y1, ex + ew + x1, ey + eh + y1))
         return frame, eye_locations
+
+    @staticmethod
+    def calculate_distance(frame, bbox, font=cv2.FONT_HERSHEY_SIMPLEX, color=(0, 0, 255),
+                           font_scale=.4, font_thickness=2):
+        bbox_area = bbox[0] * bbox[1]
+
+        distance = bbox_area / DroneVision.bbox_area_when_1_m
+        distance = round(distance, 2)
+
+        cv2.putText(frame, "Distance is {}m".format(distance), (0, frame.shape[0] - 20),
+                    font, font_scale, color, font_thickness)
+
+        return frame, distance

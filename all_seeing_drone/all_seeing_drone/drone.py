@@ -47,6 +47,7 @@ from threading import Thread
 import pygame
 import argparse
 import imutils
+import subprocess
 
 # TODO: figure out drone drift with controller
 # TODO: make flight more flexible rather than just hover
@@ -179,28 +180,40 @@ class SeeingDrone(CoDrone):
                       min_confidence=.8, tracker_model="kcf"):
         """A function to start the video stream from the drone in a separate thread. The seperate thread will
         continuously grab and store frames so that the main thread can grab frames whenever its free and not wait."""
+        # if want to connect to drone, ensure connected to drone's wifi
+        if src == r'rtsp://192.168.100.1/cam1/mpeg4':
+            wifi_name = subprocess.check_output("netsh wlan show interfaces")
+            wifi_name_lower = wifi_name.lower()
+            if 'petrone' not in wifi_name_lower.decode():
+                raise Exception("to setup drone camera, must be connected to drone wifi. You're connected to:\n\n {}"
+                                "\n\nand we expected a name that when made lowercase has 'petrone' in it".format(wifi_name))
         # Capture video from the Wifi Connection to FPV module
         # RTSP =(Real Time Streaming Protocol)
         # TODO: eventually make the connection switch automatic
         self.vs = WebcamVideoStream(src=src).start()
         self.exit_flag = False
         if setup_face_finder:
-            self.drone_detector = DroneVision(min_confidence, setup_tracker=setup_tracker, tracker_model="kcf")
+            self.drone_detector = DroneVision(min_confidence, setup_tracker=setup_tracker, tracker_model=tracker_model)
 
 
     def computer_video_check(self, use_tracker=True, src=0):
-        self._setup_camera(setup_face_finder=True, src=src, tracker_model="kcf")
+        self._setup_camera(setup_face_finder=True, src=src, setup_tracker=use_tracker)
         # self.frame_list = []
         self.processed_frame_list = [self.vs.frame_list[-1]]
+        print("entering loop, press q to quit. If this doesn't work make sure video frame is in focus,"
+              " and caps lock and num lock are off.")
         while True:
             start_time = time.time()
             frame = self.vs.read()
             # self.frame_list.append(frame)
             # resize the frame to speed up calculations
             frame = imutils.resize(frame, width=self.resize_image_width)
-            frame = self.drone_detector.detect_and_track(frame, use_tracker=use_tracker, font=self.font, color=(0, 0, 255),
-                                                         rect_thickness=self.rectangle_thickness,
-                                                         font_scale=self.font_scale, font_thickness=self.font_thickness)
+            frame, bbox_list = self.drone_detector.detect_and_track(frame, use_tracker=use_tracker, font=self.font, color=(0, 0, 255),
+                                                                     rect_thickness=self.rectangle_thickness,
+                                                                     font_scale=self.font_scale, font_thickness=self.font_thickness)
+            if len(bbox_list) > 0:
+                frame, distance = DroneVision.calculate_distance(frame, bbox_list[0])
+
             # showing FPS on Frame
             seconds = time.time() - start_time
             frame = self.vs.show_fps(frame, seconds, (0, 10), self.font, self.font_scale,
@@ -316,12 +329,14 @@ class SeeingDrone(CoDrone):
 
         return self._storageCount.d[DataType.Attitude] == receiving_flag
 
-    def _move_to_center_person(self, throttle, yaw):
+    def _move_to_center_person(self, throttle, yaw, pitch):
         self.set_throttle(throttle)
         self.set_yaw(yaw)
+        self.set_pitch(pitch)
         self.autonomous_move()
         self.set_throttle(0)
         self.set_yaw(0)
+        self.set_pitch(0)
 
 
     def launch(self, delay=0.0, height=None):
@@ -335,8 +350,8 @@ class SeeingDrone(CoDrone):
         logging.info("taking off")
         self.takeoff()
         if height is not None:
-            # self.go_to_height(height)
-            self.move(3, 0, 0, 0, 75)
+            self.go_to_height(height)
+            # self.move(3, 0, 0, 0, 75)
         self.in_flight = True
         print("done taking off")
         logging.info("done taking off")
@@ -346,8 +361,8 @@ class SeeingDrone(CoDrone):
         self.show_camera(find_face=find_face, launch=True)
         self.shutdown()
 
-    def setup_drone_controller(self):
-        self.drone_controller = DroneController()
+    def setup_drone_controller(self, frame):
+        self.drone_controller = DroneController(frame)
         self.pid_started = False
 
     def activate_drone(self, find_face=False, min_confidence=.85, launch=False, use_tracker=True,
@@ -355,14 +370,17 @@ class SeeingDrone(CoDrone):
         self.connect()
         self._setup_camera(setup_face_finder=find_face, setup_tracker=use_tracker,
                            min_confidence=min_confidence, tracker_model="kcf")
+        self.processed_frame_list = []
+        frame = self.vs.read()
+        frame = imutils.resize(frame, width=self.resize_image_width)
         if follow_face:
-            self.setup_drone_controller()
+            self.setup_drone_controller(frame)
         if launch:
             Thread(target=self.launch, args=[2.0, 1000]).start()
         print("Starting Camera, press q to quit and land drone with camera window in focus. "
               "If it doesn't close, check caps lock and num lock. \n"
               "Press H to hover to continue flight.", flush=True)
-        self.processed_frame_list = [self.vs.read()]
+
         while True:
             start_time = time.time()
             frame = self.vs.read()
@@ -374,11 +392,11 @@ class SeeingDrone(CoDrone):
                                                              font_scale=self.font_scale, font_thickness=self.font_thickness)
             if follow_face and len(bbox_list) == 1 and not self.exit_flag and not self.launching:
                 logging.debug("found face, bbox list is: {}".format(bbox_list))
-                throttle, yaw, frame = self.drone_controller.get_throttle_and_yaw(frame, bbox_list[0], write_frame_debug_info=True)
+                throttle, yaw, pitch, frame = self.drone_controller.get_drone_movements(frame, bbox_list[0], estimate_distance=True, write_frame_debug_info=True)
                 logging.debug("throttle is {} yaw is {}".format(throttle, yaw))
                 self.pid_started = True
                 # overidden CoDrone move command to be instantaneous
-                self._move_to_center_person(throttle, yaw)
+                self._move_to_center_person(throttle, yaw, pitch)
                 logging.debug("moved")
             if self.pid_started and not len(bbox_list) == 1:
                 self.pid_started = False
