@@ -350,8 +350,11 @@ class SeeingDrone(CoDrone):
         logging.info("taking off")
         self.takeoff()
         if height is not None:
+            # only effective between 20 and 1500 millimeters
             self.go_to_height(height)
-            # self.move(3, 0, 0, 0, 75)
+        else:
+            # if the camera is attached, the drone is heavier and 60% of throttle isn't so severe
+            self.move(3, 0, 0, 0, 70)
         self.in_flight = True
         print("done taking off")
         logging.info("done taking off")
@@ -361,12 +364,12 @@ class SeeingDrone(CoDrone):
         self.show_camera(find_face=find_face, launch=True)
         self.shutdown()
 
-    def setup_drone_controller(self, frame):
-        self.drone_controller = DroneController(frame)
+    def setup_drone_controller(self, frame, keep_distance=False):
+        self.drone_controller = DroneController(frame, keep_distance=keep_distance)
         self.pid_started = False
 
     def activate_drone(self, find_face=False, min_confidence=.85, launch=False, use_tracker=True,
-                       follow_face=True):
+                       follow_face=True, keep_distance=False):
         self.connect()
         self._setup_camera(setup_face_finder=find_face, setup_tracker=use_tracker,
                            min_confidence=min_confidence, tracker_model="kcf")
@@ -392,8 +395,10 @@ class SeeingDrone(CoDrone):
                                                              font_scale=self.font_scale, font_thickness=self.font_thickness)
             if follow_face and len(bbox_list) == 1 and not self.exit_flag and not self.launching:
                 logging.debug("found face, bbox list is: {}".format(bbox_list))
-                throttle, yaw, pitch, frame = self.drone_controller.get_drone_movements(frame, bbox_list[0], estimate_distance=True, write_frame_debug_info=True)
-                logging.debug("throttle is {} yaw is {}".format(throttle, yaw))
+                throttle, yaw, pitch, frame = self.drone_controller.get_drone_movements(frame, bbox_list[0],
+                                                                                        estimate_distance=keep_distance,
+                                                                                        write_frame_debug_info=True)
+                logging.debug("throttle is {} yaw is {} pitch is {}".format(throttle, yaw, pitch))
                 self.pid_started = True
                 # overidden CoDrone move command to be instantaneous
                 self._move_to_center_person(throttle, yaw, pitch)

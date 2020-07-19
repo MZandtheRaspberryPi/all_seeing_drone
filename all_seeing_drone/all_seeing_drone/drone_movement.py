@@ -8,8 +8,10 @@ from simple_pid import PID
 class DroneController():
     """A class to implement a controller, given a frame and a rectangular bounding box for an object in the frame.
     Uses a PID controller."""
-    def __init__(self, frame, setpoint_throttle=-60.0, setpoint_yaw=0.0, meter_distance=4.0, ctr_rect_proportions=(1/4, 1/4)):
+    def __init__(self, frame, keep_distance=False, setpoint_throttle=-60.0, setpoint_yaw=0.0, meter_distance=4.0, ctr_rect_proportions=(3/16, 3/16)):
         """rect_proportions is a tuple with the width of the X part of rectangle as first, and width of y as second"""
+        # flag to know if we're controlling distance too
+        self.keep_distance = keep_distance
         # throttle setpoint negative so that head will be in top of frame, as bboxy - frame - will be negative
         # pid for x-axis, or yaw adjustments
         # Kp, Ki, Kd are gain constants on the principal, integral, and derivative terms
@@ -20,16 +22,19 @@ class DroneController():
         # isn't a bottleneck
         self.setpoint_throttle = setpoint_throttle
         self.setpoint_yaw = setpoint_yaw
-        self.setpoint_pitch = meter_distance
-        self.yaw_pid = PID(Kp=.1, Ki=0.1, Kd=0.2, setpoint=self.setpoint_throttle, sample_time=round(1/14, 2), output_limits=(-10, 10))
-        self.throttle_pid = PID(Kp=.5, Ki=0.3, Kd=0.4, setpoint=self.setpoint_yaw, sample_time=round(1/14, 2), output_limits=(-60, 60))
-        self.pitch_pid = PID(Kp=1.0, Ki=0.0, Kd=0.0, setpoint=self.setpoint_pitch, sample_time=round(1/14, 2), output_limits=(-20, 20))
+        if keep_distance:
+            self.setpoint_pitch = meter_distance
+            self.pitch_pid = PID(Kp=1.0, Ki=0.0, Kd=0.0, setpoint=self.setpoint_pitch, sample_time=round(1 / 14, 2),
+                                 output_limits=(-20, 20))
+        self.yaw_pid = PID(Kp=.1, Ki=0.1, Kd=0.2, setpoint=self.setpoint_throttle, sample_time=round(1/14, 2), output_limits=(-20, 20))
+        self.throttle_pid = PID(Kp=.5, Ki=0.3, Kd=0.4, setpoint=self.setpoint_yaw, sample_time=round(1/14, 2), output_limits=(-70, 70))
         # flags to determine when to reset the pid if nescessary
         # for instance, when our error is within tolerance for throttle, we'll reset the throttle PID
         # when we're back out of tolerance we'll use it again
         self.throttle_pid_on = True
         self.yaw_pid_on = True
-        self.pitch_pid_on = True
+        if keep_distance:
+            self.pitch_pid_on = True
 
         self.throttle_errors = []
         self.throttle_outputs = []
@@ -50,7 +55,8 @@ class DroneController():
 
         # setting minimum distance error in meters. The current approach for estimating distance is rather inaccurate.
         # so, setting this high.
-        self.min_distance_error = .5
+        if keep_distance:
+            self.min_distance_error = .5
 
     @staticmethod
     def calc_x_y_error(frame, bounding_box):
@@ -104,14 +110,14 @@ class DroneController():
             if not self.pitch_pid_on:
                 self.pitch_pid_on = True
         else:
-            pitch_output = 0
+            pitch_output = 0.0
             components_pitch = ("no_error", "no_error", "no_error")
             if self.pitch_pid_on:
                 self.pitch_pid_on = False
                 self.pitch_pid.reset()
         return pitch_output, components_pitch
 
-    def get_drone_movements(self, frame, bounding_box, control_distance=False, write_frame_debug_info=False):
+    def get_drone_movements(self, frame, bounding_box, estimate_distance=False, write_frame_debug_info=False):
         x_error, y_error = DroneController.calc_x_y_error(frame, bounding_box)
         self.throttle_errors.append(y_error)
         self.yaw_errors.append(x_error)
@@ -119,20 +125,21 @@ class DroneController():
         yaw_output, components_yaw = self._get_yaw_from_x_error(x_error)
         throttle_output, components_throttle = self._get_throttle_from_y_error(y_error)
 
-        if control_distance:
+        if estimate_distance:
             distance = DroneVision.calculate_distance(frame, bounding_box)
             distance_error = distance - self.setpoint_pitch
+            self.pitch_errors.append(distance_error)
             pitch_output, components_pitch = self._get_pitch_from_distance(distance_error)
         else:
             pitch_output = 0.0
-            components_pitch = ("not_controlling_pitch")
-            distance_error = "no error"
+            components_pitch = ("dist. False", "dist. False", "dist. False")
+            distance_error = 0.0
 
         self.throttle_outputs.append(throttle_output)
         self.yaw_outputs.append(yaw_output)
         self.pitch_outputs.append(pitch_output)
         if write_frame_debug_info:
-            frame = self.write_debug(frame, x_error, y_error, throttle_output,
+            frame = self.write_debug(frame, x_error, y_error, distance_error, throttle_output,
                                      yaw_output, pitch_output, components_throttle, components_yaw, components_pitch)
         return int(throttle_output), int(yaw_output), int(pitch_output), frame
 
@@ -154,9 +161,9 @@ class DroneController():
                     font, font_scale, color, font_thickness)
         cv2.putText(frame, yaw_component_text, (0, 50),
                     font, font_scale, color, font_thickness)
-        cv2.putText(frame, pitch_text, (0, 50),
+        cv2.putText(frame, pitch_text, (0, 60),
                     font, font_scale, color, font_thickness)
-        cv2.putText(frame, pitch_components, (0, 60),
+        cv2.putText(frame, pitch_components, (0, 70),
                     font, font_scale, color, font_thickness)
 
         # writing center rectangle
@@ -168,6 +175,8 @@ class DroneController():
     def reset(self):
         self.throttle_pid.reset()
         self.yaw_pid.reset()
+        if self.keep_distance:
+            self.pitch_pid.reset()
 
 
 def command_top_gun(drone_object, joystick_object, data_to_update, exit_flag):
