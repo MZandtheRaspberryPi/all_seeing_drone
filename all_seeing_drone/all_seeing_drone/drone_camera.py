@@ -222,6 +222,8 @@ class DroneTracker():
                               color, rect_thickness)
                 # visualizing center of box
                 cv2.circle(frame, (centroid[0], centroid[1]), circle_radius, color, circle_thickness)
+        else:
+            boxes = []
         return frame, boxes
 
     def clear_tracker(self):

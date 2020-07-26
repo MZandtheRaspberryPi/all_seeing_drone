@@ -8,7 +8,7 @@ from simple_pid import PID
 class DroneController():
     """A class to implement a controller, given a frame and a rectangular bounding box for an object in the frame.
     Uses a PID controller."""
-    def __init__(self, frame, keep_distance=False, setpoint_throttle=-60.0, setpoint_yaw=0.0, meter_distance=4.0, ctr_rect_proportions=(3/16, 3/16)):
+    def __init__(self, frame, keep_distance=False, setpoint_throttle=-60.0, setpoint_yaw=0.0, meter_distance=2.0, ctr_rect_proportions=(3/16, 3/16)):
         """rect_proportions is a tuple with the width of the X part of rectangle as first, and width of y as second"""
         # flag to know if we're controlling distance too
         self.keep_distance = keep_distance
@@ -23,11 +23,13 @@ class DroneController():
         self.setpoint_throttle = setpoint_throttle
         self.setpoint_yaw = setpoint_yaw
         if keep_distance:
-            self.setpoint_pitch = meter_distance
-            self.pitch_pid = PID(Kp=1.0, Ki=0.0, Kd=0.0, setpoint=self.setpoint_pitch, sample_time=round(1 / 14, 2),
-                                 output_limits=(-20, 20))
-        self.yaw_pid = PID(Kp=.1, Ki=0.1, Kd=0.2, setpoint=self.setpoint_throttle, sample_time=round(1/14, 2), output_limits=(-20, 20))
-        self.throttle_pid = PID(Kp=.5, Ki=0.3, Kd=0.4, setpoint=self.setpoint_yaw, sample_time=round(1/14, 2), output_limits=(-70, 70))
+            self.meter_distance = meter_distance
+            self.pitch_pid = PID(Kp=5.0, Ki=0.5, Kd=1, setpoint=0.0, sample_time=round(1 / 14, 2),
+                                 output_limits=(-10, 10))
+        self.yaw_pid = PID(Kp=.1, Ki=0.1, Kd=0.2, setpoint=self.setpoint_throttle, sample_time=round(1/14, 2), output_limits=(-15, 15))
+        # because the drone is heavy with camera going down is much easier than up
+        # reflecting this in output limits in the throttle pid
+        self.throttle_pid = PID(Kp=.5, Ki=0.3, Kd=0.4, setpoint=self.setpoint_yaw, sample_time=round(1/14, 2), output_limits=(-20, 80))
         # flags to determine when to reset the pid if nescessary
         # for instance, when our error is within tolerance for throttle, we'll reset the throttle PID
         # when we're back out of tolerance we'll use it again
@@ -126,8 +128,8 @@ class DroneController():
         throttle_output, components_throttle = self._get_throttle_from_y_error(y_error)
 
         if estimate_distance:
-            distance = DroneVision.calculate_distance(frame, bounding_box)
-            distance_error = distance - self.setpoint_pitch
+            frame, distance = DroneVision.calculate_distance(frame, bounding_box)
+            distance_error = self.meter_distance - distance
             self.pitch_errors.append(distance_error)
             pitch_output, components_pitch = self._get_pitch_from_distance(distance_error)
         else:

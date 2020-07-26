@@ -185,6 +185,7 @@ class SeeingDrone(CoDrone):
             wifi_name = subprocess.check_output("netsh wlan show interfaces")
             wifi_name_lower = wifi_name.lower()
             if 'petrone' not in wifi_name_lower.decode():
+                self.disconnect()
                 raise Exception("to setup drone camera, must be connected to drone wifi. You're connected to:\n\n {}"
                                 "\n\nand we expected a name that when made lowercase has 'petrone' in it".format(wifi_name))
         # Capture video from the Wifi Connection to FPV module
@@ -353,8 +354,8 @@ class SeeingDrone(CoDrone):
             # only effective between 20 and 1500 millimeters
             self.go_to_height(height)
         else:
-            # if the camera is attached, the drone is heavier and 60% of throttle isn't so severe
-            self.move(3, 0, 0, 0, 70)
+            # if the camera is attached, the drone is heavier and 100% of throttle isn't so severe
+            self.move(3, 0, 0, 0, 80)
         self.in_flight = True
         print("done taking off")
         logging.info("done taking off")
@@ -377,9 +378,9 @@ class SeeingDrone(CoDrone):
         frame = self.vs.read()
         frame = imutils.resize(frame, width=self.resize_image_width)
         if follow_face:
-            self.setup_drone_controller(frame)
+            self.setup_drone_controller(frame, keep_distance=keep_distance)
         if launch:
-            Thread(target=self.launch, args=[2.0, 1000]).start()
+            Thread(target=self.launch, args=[2.0]).start()
         print("Starting Camera, press q to quit and land drone with camera window in focus. "
               "If it doesn't close, check caps lock and num lock. \n"
               "Press H to hover to continue flight.", flush=True)
