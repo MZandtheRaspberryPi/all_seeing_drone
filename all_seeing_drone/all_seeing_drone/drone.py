@@ -49,13 +49,6 @@ import argparse
 import imutils
 import subprocess
 
-# TODO: figure out drone drift with controller
-# TODO: make flight more flexible rather than just hover
-# TODO: figure out yaw overcorrection and why bbox list has stuff in it if it finds something than later doesn't resulting in movements based off of stuff in the past
-# need to start and init PID when find a face. Need to kill it when don't find a face and then reinit it when find one.
-# need to see if 14 fps, 14 updates to pid per second is responsive enough.
-# need to have this sending command to drone.
-# need to test instantaneous moves w/ drones, or for 1/14th of a second (assuming 14fps)
 
 def logger(func):
     def log_func(*args):
@@ -83,7 +76,7 @@ def logger(func):
 
 class SeeingDrone(CoDrone):
     """A class to enable computer vision for the robolink CoDrone"""
-    def __init__(self, video_output_dir=None, logging_level=logging.INFO, post_process=False, recognize_human=False):
+    def __init__(self, video_output_dir=None, logging_level=logging.INFO):
         """
         video_output_dir: str the directory on your computer to output videos to
         post_process: bool whether to analyze the video after drone flight is done
@@ -95,6 +88,8 @@ class SeeingDrone(CoDrone):
         self.time_now = datetime.datetime.now()
         self.video_name = self.time_now.strftime('drone_%Y%m%d_%H%M')
         self.video_full_path = os.path.join(self.video_output_dir, self.video_name) + ".avi"
+        self.raw_video_name = self.time_now.strftime('drone_%Y%m%d_%H%M_raw')
+        self.full_path_raw = os.path.join(self.video_output_dir, self.raw_video_name) + '.avi'
 
         # setting up logging
         self.log_path = self.video_output_dir
@@ -112,8 +107,6 @@ class SeeingDrone(CoDrone):
                 logging.FileHandler(self.full_path)
                 # logging.StreamHandler()
             ])
-
-        self.fps_actual = 29.0
 
         # setting up gamepad
         try:
@@ -197,7 +190,7 @@ class SeeingDrone(CoDrone):
             self.drone_detector = DroneVision(min_confidence, setup_tracker=setup_tracker, tracker_model=tracker_model)
 
 
-    def computer_video_check(self, use_tracker=True, src=0):
+    def computer_video_check(self, use_tracker=True, src=0, find_distance=False, write_camera_focal_debug=False):
         self._setup_camera(setup_face_finder=True, src=src, setup_tracker=use_tracker)
         # self.frame_list = []
         self.processed_frame_list = [self.vs.frame_list[-1]]
@@ -212,8 +205,21 @@ class SeeingDrone(CoDrone):
             frame, bbox_list = self.drone_detector.detect_and_track(frame, use_tracker=use_tracker, font=self.font, color=(0, 0, 255),
                                                                      rect_thickness=self.rectangle_thickness,
                                                                      font_scale=self.font_scale, font_thickness=self.font_thickness)
-            if len(bbox_list) > 0:
+            if len(bbox_list) > 0 and find_distance:
                 frame, distance = DroneVision.calculate_distance(frame, bbox_list[0])
+
+            if len(bbox_list) > 0 and write_camera_focal_debug:
+                (x1, y1, x2, y2) = bbox_list[0]
+                height, width = frame.shape[:2]
+
+                x_bbox_len = x2 - x1
+                y_bbox_len = y2 - y1
+
+                cv2.putText(frame, "x_bbox_len is {} pixels".format(x_bbox_len), (0, height - 40),
+                            self.font, self.font_scale, (0, 0, 255), self.font_thickness)
+                cv2.putText(frame, "y_bbox_len is {} pixels".format(y_bbox_len), (0, height - 30),
+                            self.font, self.font_scale, (0, 0, 255), self.font_thickness)
+
 
             # showing FPS on Frame
             seconds = time.time() - start_time
@@ -355,7 +361,7 @@ class SeeingDrone(CoDrone):
             self.go_to_height(height)
         else:
             # if the camera is attached, the drone is heavier and 100% of throttle isn't so severe
-            self.move(3, 0, 0, 0, 80)
+            self.move(3.0, 0, 0, 0, 80)
         self.in_flight = True
         print("done taking off")
         logging.info("done taking off")
@@ -404,6 +410,8 @@ class SeeingDrone(CoDrone):
                 # overidden CoDrone move command to be instantaneous
                 self._move_to_center_person(throttle, yaw, pitch)
                 logging.debug("moved")
+            elif len(bbox_list) != 1 and not self.exit_flag and not self.launching:
+                self._move_to_center_person(0, 0, 0)
             if self.pid_started and not len(bbox_list) == 1:
                 self.pid_started = False
                 self.drone_controller.reset()
@@ -454,6 +462,17 @@ class SeeingDrone(CoDrone):
                                    self.act_fps, (int(width),
                                    int(height)))
         for frame in frame_list:
+            self.out.write(frame)
+        self.out.release()
+
+        # writing raw video
+        print("Writing out raw video to {}".format(self.full_path_raw))
+        self.fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        height, width = self.vs.frame_list[-1].shape[:2]
+        self.out = cv2.VideoWriter(self.full_path_raw, self.fourcc,
+                                   self.cam_fps, (int(width),
+                                   int(height)))
+        for frame in self.vs.frame_list:
             self.out.write(frame)
         self.out.release()
 

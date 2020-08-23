@@ -247,10 +247,18 @@ class DroneTracker():
         return frame, centroid_list
 
 class DroneVision():
-    # this is roughly the pixel area of papa's face when he's 1meter away from the drone camera
-    # self.bbox_area_when_1_m = 1700
-    # roughly my face size when 1m away
-    bbox_area_when_1_m = 2900
+
+    # these are inputs to calibrate the distance recognition. Set these by
+    # running the camera test function with debug information for camera focal enabled.
+    # https://www.pyimagesearch.com/2015/01/19/find-distance-camera-objectmarker-using-python-opencv/
+    # https://www.scantips.com/lights/subjectdistance.html
+    # by law of triangle equality
+    # camera focal length / actual distance = pixel width / actual width
+    pixel_width_face = 47.00
+    calibration_distance_cm = 100.00
+    cm_width_face_real_life = 12.00
+    camera_focal_length = pixel_width_face * calibration_distance_cm / cm_width_face_real_life
+
     def __init__(self, min_confidence=.8, setup_eye_detector=True, setup_tracker=False, tracker_model="kcf"):
         print("loading dnn model and weights from disk")
         self.model_path = os.path.join(os.path.dirname(__file__), "opencv_models",
@@ -379,14 +387,24 @@ class DroneVision():
         return frame, eye_locations
 
     @staticmethod
-    def calculate_distance(frame, bbox, font=cv2.FONT_HERSHEY_SIMPLEX, color=(0, 0, 255),
-                           font_scale=.4, font_thickness=2):
-        bbox_area = bbox[0] * bbox[1]
+    def calculate_distance(frame, bbox, font=cv2.FONT_HERSHEY_SIMPLEX, color=(0, 255, 0),
+                           font_scale=.3, font_thickness=1):
+        (x1, y1, x2, y2) = bbox
 
-        distance = bbox_area / DroneVision.bbox_area_when_1_m
+        x_len = x2 - x1
+
+        if x_len == 0:
+            cv2.putText(frame, "Distance not calc. X_len = 0", (0, 80),
+                        font, font_scale, color, font_thickness)
+            return frame, 175.00
+
+
+        # by law of triangle equality
+        # camera focal length / actual distance = pixel width / actual width
+        distance = DroneVision.camera_focal_length * DroneVision.cm_width_face_real_life / x_len
         distance = round(distance, 2)
 
-        cv2.putText(frame, "Distance is {}m".format(distance), (0, frame.shape[0] - 20),
+        cv2.putText(frame, "Distance is {}cm".format(distance), (0, 80),
                     font, font_scale, color, font_thickness)
 
         return frame, distance
