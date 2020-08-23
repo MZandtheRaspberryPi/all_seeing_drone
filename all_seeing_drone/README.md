@@ -8,7 +8,7 @@ Right: raw drone input video
 Notice it tracking me!
 
 Here's a youtube video showing off the project. There's a link in the description of this video to another video that is more technical and shows some of the project work.
-[Making a PB&J with authonomous drone camera-person](https://www.youtube.com/watch?v=P_NQB7phWnQ&t)
+[Making a PB&J with autonomous drone camera-person](https://www.youtube.com/watch?v=P_NQB7phWnQ&t)
 
 ## How do I use this?
 Most of this project needs the CoDrone's bluetooth module with drivers plugged into the computer (to command the drone), as well as the computer to be connected to the CoDrone's wifi (to get the video stream).  
