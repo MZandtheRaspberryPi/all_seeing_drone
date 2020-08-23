@@ -1,37 +1,20 @@
-description = """
-drone_recognize_human.py is a script that allows control of a drone and
-records the drone video overlaying sensor information, and finally processes
-the video and attempts to recognize humans. The end goal is to be able to have
-it fly autonomously and notify the user if anyone is home.
-
-Still some ways to go on this :)
+"""
+drone.py is a library that allows a CoDrone to be autonomous and follow a face.
 
 Make sure to follow these steps.
 
 1.Connect FPV module to CoDrone
 2.Conect BLE module to computer make sure to reset it (RED LED)
-3.Connect XBOX 360 Controller to your computer via USB
 4.Connect Wifi from Computer to FPV (ex: PETRONE FPV 1f57 ,PASSWORD 12345678)
-5.Run this program from the command line
+5.Use the class as you want, or use the script run_drone.py up a level in the repo to get an idea for how to use the class.
 
-Can be run normally with the below command that will recognize humans post-landing
- python drone_recognize_human.py -post_process
-
-Or can be run to recognize humans in real time with the below:
- python drone_recognize_human.py -recognize_human
-
-Or can be run without recognizing humans (faster run time/highest FPS):
- python drone_recognize_human.py
-
-Can be profiled (for speed testing) by running with the below, or enabling
-debug logging as there is useful logging built in:
- python -m cProfile -s cumtime drone_recognize_human.py
-
+Some useful links:
+# https://forum.robolink.com/topic/148/how-to-control-my-drone-with-opencv
+# https://drive.google.com/drive/folders/1mpqUnG6tBHZDdtv_FG5Z0npH_5DAT785
 """
 
-from all_seeing_drone.drone_camera import FPS, WebcamVideoStream, recognize_human, process_video, DroneVision
-from all_seeing_drone.drone_util import get_joystick_buttons, update_non_real_time_info, update_sensor_information, hud_display
-from all_seeing_drone.drone_movement import command_top_gun, DroneController
+from all_seeing_drone.drone_camera import WebcamVideoStream, DroneVision
+from all_seeing_drone.drone_movement import DroneController
 from all_seeing_drone.drone_util import calibrate
 
 from CoDrone import CoDrone
@@ -45,42 +28,16 @@ import logging
 import time
 from threading import Thread
 import pygame
-import argparse
 import imutils
 import subprocess
 
 
-def logger(func):
-    def log_func(*args):
-        # logging.debug(
-        #     'Running "{}" with arguments {}'.format(func.__name__, args))
-        start_time = time.time()
-        return_values = func(*args)
-        duration = round(time.time() - start_time, 6)
-        # logging.debug("Ran {} with arguments {} in {} sec".format(func.__name__,
-        #                                                          args,
-        #                                                          duration))
-        logging.debug("Ran {} in {} sec".format(func.__name__, duration))
-        return return_values
-    # Necessary for closure to work (returning WITHOUT parenthesis)
-    return log_func
-
-# video starts and ends with a button
-# takeoff and land with a button
-# control with joystick in mid air
-# get FPV and overlay info like battery, signal (if possible), angular direction
-# x,y, ect
-# button to change leds/light show
-# threading to handle video processing in parrallel?
-# flags like is flying and such to control when to quit
-
 class SeeingDrone(CoDrone):
     """A class to enable computer vision for the robolink CoDrone"""
-    def __init__(self, video_output_dir=None, logging_level=logging.INFO):
+    def __init__(self, video_output_dir: str = None, logging_level: int = logging.INFO):
         """
-        video_output_dir: str the directory on your computer to output videos to
-        post_process: bool whether to analyze the video after drone flight is done
-        recognize_human: bool whether to look for faces in the video
+        :param video_output_dir: str the directory on your computer to output videos to, and the log files
+        :param logging_level: how detailed should the logs be.
         """
         super().__init__()
 
@@ -191,6 +148,21 @@ class SeeingDrone(CoDrone):
 
 
     def computer_video_check(self, use_tracker=True, src=0, find_distance=False, write_camera_focal_debug=False):
+        """ This is a function to test the drone's computer vision system (or a webcam on the computer) without actually
+        launching the drone. This is convenient because drone can crash into things, so its nice to isolate.
+
+        :param use_tracker: this is the flag on whether to use a seperate tracker algorithm when
+            the CNN has found a face but then loses it. It can help a drone follow you, but the bounding box from the
+            tracker argument can be weird shapes and throw off the drone estimating how far it is from a face
+        :param src: this is the webcam to connect to. an int like 0 will connect to your computers webcam, whereas a string like
+            r'rtsp://192.168.100.1/cam1/mpeg4' will connect to the drone's camera.
+        :param find_distance: whether to estimate distance in the frame. Note this function was calibrated with the CoDrone's
+            Camera and so wouldn't be reliable with the computer webcam.
+        :param write_camera_focal_debug: whether to write debug info to the frame that will help in calibrating the distance
+            estimation function.
+        :return:
+        """
+
         self._setup_camera(setup_face_finder=True, src=src, setup_tracker=use_tracker)
         # self.frame_list = []
         self.processed_frame_list = [self.vs.frame_list[-1]]
@@ -235,11 +207,15 @@ class SeeingDrone(CoDrone):
         self._shutdown_camera(self.processed_frame_list)
 
 
-
-
     def _find_face(self, frame, use_tracker=False):
         """A function to use open cv's deep neural network capability and a pre-trained model to detect
-         faces in a frame. It uses a Single Shot Detector (SSD) with a Res Net base network and a KCF Tracker"""
+         faces in a frame. It uses a Single Shot Detector (SSD) with a Res Net base network and a KCF Tracker.
+
+         The logic here is really, what to do when you find a face, versus when you don't find a face.
+
+         If the CNN found a face in the previous frame, but didn't in this frame, maybe you want to use a tracker.
+
+         Conversely, if the CNN didn't find a face and the tracker lost it, reinitialize the tracker and such."""
         start_time = time.time()
         # if a bounding box exists use the tracker method as its faster than the dnn method (but less accurate probably)
         if self.tracker_bb is not None and use_tracker:
@@ -309,7 +285,8 @@ class SeeingDrone(CoDrone):
         self.send_control(*self._control.getAll())
 
     def send_control(self, roll, pitch, yaw, throttle):
-        """This function sends control request.
+        """This function sends control request. Using a seperate version than CoDrone classes as this finishes faster
+        and doesn't delay the main loop. Its more like the arduino version in that regard that its instantaneous.
 
         Args:
             roll: the power of the roll, which is an int from -100 to 100
@@ -337,6 +314,8 @@ class SeeingDrone(CoDrone):
         return self._storageCount.d[DataType.Attitude] == receiving_flag
 
     def _move_to_center_person(self, throttle, yaw, pitch):
+        """A movement command that won't delay the main loop, and will finish quickly. This is like some of the
+        arduino movement functions that are instantaneous, as I had some trouble doing that in the python functions."""
         self.set_throttle(throttle)
         self.set_yaw(yaw)
         self.set_pitch(pitch)
@@ -347,7 +326,8 @@ class SeeingDrone(CoDrone):
 
 
     def launch(self, delay=0.0, height=None):
-        """Delay to give time to start recording and showing camera"""
+        """A function to launch the drone. Called via a seperate thread from activate_drone often.
+        Delay is an argument to give time to start recording and showing camera"""
         self.launching = True
         time.sleep(delay)
         if not self.isConnected():
@@ -375,8 +355,19 @@ class SeeingDrone(CoDrone):
         self.drone_controller = DroneController(frame, keep_distance=keep_distance)
         self.pid_started = False
 
-    def activate_drone(self, find_face=False, min_confidence=.85, launch=False, use_tracker=True,
-                       follow_face=True, keep_distance=False):
+    def activate_drone(self, find_face: bool = False, min_confidence: float = .85, launch: bool = False,
+                       use_tracker: bool = True, follow_face: bool = True, keep_distance: bool = False):
+        """
+        :param find_face: this determines whether to try to recognize faces
+        :param min_confidence: this is the minimum confidence for the CNN to find a face in an image. 85 + usually works well.
+        :param launch: this parameter is the one that controls whether or not the drone actually launches
+        :param use_tracker: this is the flag on whether to use a seperate tracker algorithm when
+            the CNN has found a face but then loses it. It can help a drone follow you, but the bounding box from the
+            tracker argument can be weird shapes and throw off the drone estimating how far it is from a face
+        :param follow_face: this determines whether or not the drone should move autonomously to follow the faces found
+        :param keep_distance: this determines whether the drone should try to estimate distance and keep that at a steady amount.
+        :return:
+        """
         self.connect()
         self._setup_camera(setup_face_finder=find_face, setup_tracker=use_tracker,
                            min_confidence=min_confidence, tracker_model="kcf")
@@ -479,210 +470,3 @@ class SeeingDrone(CoDrone):
     def shutdown(self):
         logging.info("shutting down")
         self.disconnect()
-
-
-def main():
-    # setting up logging
-    log_path = r'.'
-    file_name = 'droneLog.txt'
-    full_path = os.path.join(log_path, file_name)
-    # creating log file if it doesn't yet exist
-    if not os.path.exists(full_path):
-        logFile = open(full_path, 'w')
-        logFile.write("")
-        logFile.close()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)-5.5s]  %(message)s",
-        handlers=[
-            logging.FileHandler(full_path),
-            logging.StreamHandler()
-        ])
-    # logging.disable(logging.DEBUG)
-    # setting up command line arguments
-    parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("-post_process", action="store_true",
-                        help="""switch to determine whether to run open cv2's
-                        haar cascade methodology to recognize a face after
-                        saving the original video. If included, will do.""")
-    parser.add_argument("-recognize_human", action="store_true",
-                        help="""switch to determine whether to run open cv2's
-                        haar cascade methodology to recognize a face in
-                        real time as flying. If included, will do.""")
-    args = parser.parse_args()
-
-    TIME_NOW = datetime.datetime.now()
-    # set your output directory to save videos in the below:
-    VIDEO_DIRECTORY = "non_existant_directory"
-    VIDEO_NAME = TIME_NOW.strftime('drone_capture_%Y_%m_%d_%H-%M')
-
-    # setting up gamepad
-    pygame.init()
-    pygame.joystick.init()
-    joystick = pygame.joystick.Joystick(0)
-    joystick.init()
-    axes = joystick.get_numaxes()
-
-    # creating drone object and pairing
-    # ensure wifi is connected to drone for camera
-    drone = CoDrone()
-    logging.info("Pairing")
-    drone.pair()
-    logging.info("Paired")
-
-    # show that got connection
-    # gamepad.set_vibration(1, 1, 1000)
-    # giving connection a moment to resolve
-    time.sleep(1)
-
-    while not drone.is_ready_to_fly():
-        logging.info("drone not ready to fly")
-        logging.info("sleeping")
-        time.sleep(1)
-
-    # https://forum.robolink.com/topic/148/how-to-control-my-drone-with-opencv
-    # https://drive.google.com/drive/folders/1mpqUnG6tBHZDdtv_FG5Z0npH_5DAT785
-
-    # Capture video from the Wifi Connection to FPV module
-    # RTSP =(Real Time Streaming Protocol)
-    # TODO: eventually make the connection switch automaticS
-    vs = WebcamVideoStream(src=r'rtsp://192.168.100.1/cam1/mpeg4').start()
-    fps = FPS().start()
-
-    # this is stuff for saving video, used to get  width and height from stream
-    # but now could make it class variables if wanted as using threaded class
-    # width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    # height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    width = 480
-    height = 320
-    logging.debug("Height: {} Width: {}".format(height, width))
-
-
-    #create the font
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = .3
-    font_thickness = int(1)
-    # https://docs.opencv.org/3.0-beta/doc/py_tutorials/py_gui/py_video_display/py_video_display.html
-    # fourcc format and extension (.avi) is particular. expirement
-    # to see what works on your computer
-    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-    out = cv2.VideoWriter(os.path.join(VIDEO_DIRECTORY, VIDEO_NAME) + ".avi",
-                          fourcc, 6, (int(width), int(height)))
-
-    exit_flag = False
-    take_off = False
-    sensor_data = {}
-    sensor_data_counter = 0
-    exit_duration = 0
-    while True:
-        print("Press button A to take off; Button B to land; Button X to kill camera and post-process; and Button Y to emergency stop", flush=True)
-        loop_start_time = time.time()
-        now = time.time()
-        # r, frame = cap.read()
-        frame = vs.read()
-        # updating fps counter
-        fps.update()
-        logging.debug("Reading frame took {} seconds".format(time.time() - now))
-
-        # incrementing sensor_data, only read non-real time
-        # sensors every 20th frame. I defined which to not check each loop
-        # based on what I wanted real time updates on
-        # sensor_data = update_sensor_information_logger(drone, sensor_data)
-        if sensor_data_counter % 20 == 0:
-            logging.debug("updating non real time info")
-            sensor_data = update_non_real_time_info_logger(drone, sensor_data)
-            logging.debug("Battery: {}".format(sensor_data["battery_percentage"]))
-            sensor_data_counter = 0
-
-        sensor_data_counter += 1
-
-        # refreshing data from joystick
-        now = time.time()
-        pygame.event.get()
-        logging.debug("Getting events from pygame took {} seconds".format(time.time() - now))
-
-        # sending joystick commands, only if drone is in flight
-        sensor_data = command_top_gun_logger(drone, joystick, sensor_data, exit_flag)
-
-        # overlaying HUD on the frame
-        frame = hud_display_logger(frame, width, height, sensor_data, font, font_scale, font_thickness)
-
-        # recognizing people
-        if args.recognize_human:
-            frame = recognize_human(frame)
-
-        # reading the buttons
-        sensor_data = get_joystick_buttons_logger(sensor_data, joystick)
-
-        now = time.time()
-
-        # button A is take off
-        if sensor_data["button_A"] and not take_off:
-            logging.info("taking off")
-            Thread(target=drone.takeoff, args=()).start()
-            take_off = True
-        # button B is land
-        elif sensor_data["button_B"] and take_off:
-            logging.info("landing")
-            Thread(target=drone.land, args=()).start()
-            take_off = False
-        # button X is kill camera, start post-processing
-        elif sensor_data["button_X"]:
-            logging.info("killing camera")
-            exit_flag = True
-        # button Y is emergency stop
-        elif sensor_data["button_Y"]:
-            logging.info("emergency stopping")
-            drone.emergency_stop()
-            take_off = False
-            break
-
-        logging.debug("Evaluating buttons/doing commands if buttons took {} seconds".format(time.time() - now))
-
-        # displaying the frame and writing it
-        now = time.time()
-        cv2.imshow("frame", frame)
-        out.write(frame)
-        logging.debug("Writing/showing frame took {} seconds".format(time.time() - now))
-        logging.debug("full loop took {} seconds".format(time.time() - loop_start_time))
-
-        if exit_flag:
-            # stop the timer and display FPS information
-            fps.stop()
-            logging.info("elasped time: {:.2f}".format(fps.elapsed()))
-            logging.info("approx. FPS: {:.2f}".format(fps.fps()))
-            break
-
-
-    drone.disconnect()
-    vs.stop()
-    out.release()
-    cv2.destroyAllWindows()
-
-    if args.post_process:
-           process_video(VIDEO_DIRECTORY, VIDEO_NAME)
-
-
-
-
-get_joystick_buttons_logger = logger(get_joystick_buttons)
-
-
-
-
-
-
-
-
-command_top_gun_logger = logger(command_top_gun)
-
-hud_display_logger = logger(hud_display)
-
-
-update_sensor_information_logger = logger(update_sensor_information)
-
-
-update_non_real_time_info_logger = logger(update_non_real_time_info)
-
-if __name__ == "__main__":
-    main()

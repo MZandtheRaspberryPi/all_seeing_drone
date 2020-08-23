@@ -118,66 +118,6 @@ class WebcamVideoStream:
         self.stream.release()
         return elapsed_cam, fps_cam, elapsed_act, fps_act
 
-def process_video(video_directory, written_video_name):
-    PROCESSED_VIDEO_NAME = written_video_name + "_processed"
-    full_body = cv2.data.haarcascades+'haarcascade_fullbody.xml'
-    frontal_face = cv2.data.haarcascades+'haarcascade_frontalface_default.xml'
-    profile_face = cv2.data.haarcascades+'haarcascade_profileface.xml'
-
-    person_cascade = cv2.CascadeClassifier(frontal_face)
-
-
-    cap = cv2.VideoCapture(os.path.join(video_directory, written_video_name) + ".avi")
-    # this is stuff for saving video
-    width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    # https://docs.opencv.org/3.0-beta/doc/py_tutorials/py_gui/py_video_display/py_video_display.html
-    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-    out = cv2.VideoWriter(os.path.join(video_directory, PROCESSED_VIDEO_NAME + '.avi'),
-                          fourcc, 6, (int(width), int(height)))
-
-    while (cap.isOpened()):
-        r, frame = cap.read()
-        if r:
-            start_time = time.time()
-            # Downscale to improve frame rate
-            # frame = cv2.resize(frame, (640, 360))
-            # Haar-cascade classifier needs a grayscale image
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            rects = person_cascade.detectMultiScale(gray_frame)
-
-            print("FPS: ", 1.0 / (time.time() - start_time))  # FPS = 1 / time to process loop
-            end_time = time.time()
-            print("Elapsed Time:", end_time - start_time)
-
-            for (x, y, w, h) in rects:
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            # don't need to see the frame here
-            # cv2.imshow("preview", frame)
-            out.write(frame)
-        if not r:
-            break
-    print("wrote processed video")
-    cap.release()
-    out.release()
-    cv2.destroyAllWindows()
-
-
-def recognize_human(frame_to_analyze):
-    start_time = time.time()
-    full_body = cv2.data.haarcascades+'haarcascade_fullbody.xml'
-    frontal_face = cv2.data.haarcascades+'haarcascade_frontalface_default.xml'
-    profile_face = cv2.data.haarcascades+'haarcascade_profileface.xml'
-    person_cascade = cv2.CascadeClassifier(frontal_face)
-    # Downscale to improve frame_to_analyze rate
-    # frame_to_analyze = cv2.resize(frame_to_analyze, (640, 360))
-    # Haar-cascade classifier needs a grayscale image
-    gray_frame_to_analyze = cv2.cvtColor(frame_to_analyze, cv2.COLOR_RGB2GRAY)
-    rects = person_cascade.detectMultiScale(gray_frame_to_analyze)
-    for (x, y, w, h) in rects:
-        cv2.rectangle(frame_to_analyze, (x, y), (x+w, y+h), (0, 255, 0), 2)
-    logging.debug("Analyzed frame and overlayed rectangles in {} seconds".format(time.time() - start_time))
-    return frame_to_analyze
 
 class DroneTracker():
     """A class to wrap some functionality around open cv's object tracker functionality for the CoDrone"""
@@ -247,6 +187,8 @@ class DroneTracker():
         return frame, centroid_list
 
 class DroneVision():
+    """This is a class that implements computer vision functionality for the drone, like finding faces and tracking them
+    and finding distance"""
 
     # these are inputs to calibrate the distance recognition. Set these by
     # running the camera test function with debug information for camera focal enabled.

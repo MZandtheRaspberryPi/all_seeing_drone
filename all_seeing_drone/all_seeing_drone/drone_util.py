@@ -1,3 +1,6 @@
+"""A lot of the utility functions in here aren't used, they were from earlier drafts. That said, some of them are
+useful in terms of overlaying hud and sensor info, and getting buttons from an xbox 360 controller, so keeping them in here."""
+
 import cv2
 import CoDrone
 import time
@@ -107,8 +110,6 @@ def update_non_real_time_info(drone_object, sensor_data):
     # returns data from barometer sensor
     # sensor_data["pressure"] = drone_object.get_pressure()
     return sensor_data
-
-
 
 def get_joystick_buttons(sensor_data, joystick_object):
     sensor_data["button_A"] = joystick_object.get_button(0)
