@@ -2,6 +2,7 @@
 This is a project to work with the RoboLink CoDrone (https://www.robolink.com/codrone/) to enable the drone to follow someone. It introduces computer vision and movements off of the computer vision to work towards the CoDrone autonomously following someone.
 
 ![Demo of Autonomous Drone](drone.gif)
+
 Bottom left: processed drone video with debug information
 Top left: cell phone camera in corner of room, showing drone flying
 Right: raw drone input video
