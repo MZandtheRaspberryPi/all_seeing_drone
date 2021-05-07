@@ -26,16 +26,13 @@ Plus, I was really interested in Computer Vision and wanted to experiment and le
 To enable CoDrone to follow me and keep me in the center of the video.  
 To be able to cook a lunch and have it record the recipe—including my movements from fridge to stove, ect.  
 
-See the youtube link at the start of this README and let me know how I did!
+See the youtube link at the start of this README and let me know how I did!  
 
 ## overview of the repo
-this is a monorepo structure, so this all_seeing_drone folder is one sub project in the im_practical_programming. im_practical_programming/all_seeing_drone should be the root if you make a .venv.  
-
-In im_practical_programming/all_seeing_drone/ there are various master scripts. calibrate_drone.py is to be used when drift is obeserved in the drone. camera_test.py is a useful file for a developer to see the video processing and make quick changes without launching the drone.
+calibrate_drone.py is to be used when drift is obeserved in the drone. camera_test.py is a useful file for a developer to see the video processing and make quick changes without launching the drone.
 Drone Demo.ipynb is an older jupyter notebook, but these days I more so use run_drone.py to use the main functionality. The jupyter notebook approach is helpful when you want to connect once and run different commands, as it will stay connected to the drone till you kill the kernel (as opposed to python script which will connect, then disconnect when script ends).  
 
-In im_practical_programming/all_seeing_drone/all_seeing_drone there are the main modules. drone.py is a sublass of the CoDrone library to call computer vision functions and autonomous movement functions. The computer vision functiosn like seeing people and estimating distance from a frame are in drone_camera and the movement functions like PID and PID calibration numbers are in drone_movement.py.
-
+In all_seeing_drone/all_seeing_drone there are the main modules. drone.py is a sublass of the CoDrone library to call computer vision functions and autonomous movement functions. The computer vision functions like seeing people and estimating distance from a frame are in drone_camera and the movement functions like PID and PID calibration numbers are in drone_movement.py.  
 
 
 ## troubleshooting
